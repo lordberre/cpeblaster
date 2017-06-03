@@ -1,0 +1,6 @@
+#!/bin/bash
+sleep $[ ( $RANDOM % 5 ) + 3]s # Create randomness so multiple scripts don't kill each other incorrectly
+service=$1 # Service name
+iperf3_port=$2 # Listening port
+iperf3ded="$(iperf3 -c 127.0.0.1 -p $iperf3_port -t 1 | egrep 'busy|Connect' | wc -l & sleep 1 && kill -2 $(pgrep -f 'iperf3 -c' | awk '{print $1}'))"
+    if [ $iperf3ded -lt 1 ]; then echo 'restarting hanged iperf3 daemon' | logger -p error && systemctl restart $service;else echo 'nothing done'; fi

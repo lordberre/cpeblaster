@@ -1,0 +1,32 @@
+#!/bin/bash
+scriptdir=/home/cpelabz/abscript_new
+tag=$1
+ip=$2
+#sessions=$3
+#filesize=$4
+
+# Create test ID
+count=$(( ( RANDOM % 9999 )  + 100 )) &&
+echo $count > $HOME/ab_id
+
+# Usage 
+# $script <tag (e.g routername)> <http-server ip> <sessions> <filesize>
+
+echo "[Apachebench] The date and time is: $(date), and we're starting now." | logger -p notice &&
+echo "[Apachebench] The date and time is: $(date), and we're starting now." &&
+$scriptdir/./ab-script $tag	 $ip	   10 10K &&
+$scriptdir/./ab-script $tag      $ip       100 10K &&
+$scriptdir/./ab-script $tag      $ip       1000 10K &&
+$scriptdir/./ab-script $tag      $ip       10000 10K &&
+
+$scriptdir/./ab-script $tag      $ip       10 100K &&
+$scriptdir/./ab-script $tag      $ip       100 100K &&
+$scriptdir/./ab-script $tag      $ip       1000 100K &&
+$scriptdir/./ab-script $tag      $ip       10000 100K &&
+
+$scriptdir/./ab-script $tag      $ip       10 1M &&
+$scriptdir/./ab-script $tag      $ip       100 1M &&
+$scriptdir/./ab-script $tag      $ip       1000 1M &&
+$scriptdir/./ab-script $tag      $ip       10000 1M &&
+echo "[Apachebench] The date and time is: $(date), and we're done now." | logger -p notice &&
+echo "[Apachebench] The date and time is: $(date), and we're done now." && rm $HOME/ab_id

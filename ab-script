@@ -1,0 +1,16 @@
+#!/bin/bash
+mkdir -p ~/tests
+mkdir -p ~/tests/$1
+ulimit -n 100000
+
+# File sizes = 10K,100K and 1M
+# Sessions = 10,100,1000 and 10000
+
+testref=$1
+target=$2
+sessions=$3
+filesize=$4
+count=$(tail $HOME/ab_id)
+abparse="grep Transfer | awk '{print \$3}' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$(hostname) apachebench[\$(echo \$count)]: \$(echo \$count) $testref $target $sessions $filesize /\" >> /var/log/chprobe_ab.log"
+abparse_syslog="grep Transfer | awk '{print \$3}' | sed -e \"s/^/\$(echo \$count) $testref $target $sessions $filesize / \" | logger -p local2.debug -t apachebench"
+ab -rt180 -c $sessions -s 240 http://$target/$filesize.jpg 2>&1 | eval $abparse

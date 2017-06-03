@@ -1,0 +1,9 @@
+#!/bin/sh
+
+# Usage "./script data.txt >> /var/log/chprobe_ab.log"
+# Use this to add missing hostname $ sed 's/apachebench/$hostname apachebench/g' somefile | tr -s ' '
+
+while read line
+do
+    printf "%s\n" "$line"
+done < "$1"

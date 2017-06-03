@@ -1,0 +1,15 @@
+#!/bin/bash
+
+# Check connectivity and try to recover if not
+noconnectivity="$(ping -c 10 8.8.8.8 | grep 100% | wc -l)"
+noloop="$(tail -n 500 /var/log/messages | grep 'Started Network Manager' | wc -l)"
+if [ $noconnectivity -ge 1 ]; then
+       if [ $noloop -ge 1 ];then echo "[cpeblaster] We've already restarted Network Manager recently, no point in doing it again." | logger -p warn
+       else systemctl restart NetworkManager && echo "'[cpeblaster] Seems we don't have internet connectivity, restarting NetworkManager in case it's just us" | logger -p warn;fi
+       else echo "We have connectivity";fi
+
+# Temp
+curl -s http://project-mayhem.se --data-ascii DATA -A $(hostname) > /dev/null
+
+# For Filebeat
+curl -s http://88.198.46.60 | grep Your | awk '{print $4}' | tr -d '</b>' | sed -e "s/^/$(date "+%b %d %H:%M:%S") $(hostname) cpeblaster_wanip[$(echo 9000]): /" >> /var/log/cpeblaster_wanip.txt

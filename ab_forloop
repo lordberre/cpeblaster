@@ -1,0 +1,2 @@
+#!/bin/bash
+for x in {1..100};do sleep 10 && /home/cpelabz/abscript_new/./oneshot-apachebench loopback_$x 127.0.0.1 && echo 'Test should be finished. sleeping 30sec' | logger -p notice && sleep 30;done
