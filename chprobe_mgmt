@@ -1,0 +1,123 @@
+#!/bin/bash
+
+# Vars
+probe=false
+bbk_test=false
+chprobe_configcommit=false
+probe_reboot=false
+REDIRECT="/dev/null"
+PLAYDIR="/etc/chprobe/plays"
+
+# Ansible adhoc shell
+adhoc_shell () {
+COMMAND=$2
+ansible $1 -m shell -a "$COMMAND"
+}
+
+# Ansible adhoc shell (SUDO)
+adhoc_shell_sudo () {
+COMMAND=$2
+ansible $1 -m shell -a "$COMMAND" -K -b
+}
+
+
+# colors
+LIME_YELLOW=$(tput setaf 190)
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+NORMAL=$(tput sgr0)
+MAGENTA=$(tput setaf 6)
+
+# Usage/help
+usage () {
+cat <<USAGE
+$NOREMAL How to use: chprobe_mgmt
+Argument + <probename> or use 'chprobes' to run command on all probes
+Example: "chprobe_mgmt -c chprobe03"
+
+$NORMAL##### GLOBAL $RED
+$GREEN    -v) Increase verbosity $RED
+$NORMAL##### MANAGEMENT    $GREEN
+    -c) Apply configuration for probes. $RED
+    -p) Ping probes (via Ansible module) $RED
+$GREEN    -r) Reboot probes (requires sudo) $RED
+    -g) Restart Network interface on probes $RED
+$NORMAL##### TESTS $RED
+$GREEN    -i) Run a BBK test and fetch results $RED
+    -b) Run a iperf3 TCP test and fetch results $RED
+    -tp) Send PING echos to target via probe $RED
+$NORMAL##### WIFI $RED
+    -wl) Set WiFi label to append on iperf3 tests $RED
+    -w24g) Attempt to move probe to 2.4Ghz $RED 
+    -w5g) Attempt to move probe to 5Ghz $RED
+    -wd) Fetch phy-data from probe $RED
+$NORMAL##### MISCELLANEOUS $RED
+    -a) ARP-scan entire subnet and report back $RED
+    -z) Browse avahi/zeroconf for entire subnet and report back $RED
+    -tcpdump) Run tcpdump on probe interface $RED
+$NORMAL##### LIVE CONFIGURATION (Note: For permanent changes, use the configuration file instead.) $RED
+    -pi) Set iperf3 target $RED
+
+$NORMAL Only arguments in $GREEN GREEN $NORMAL are working currently.
+USAGE
+ }
+
+options=':z:i:r:c:hv'
+while getopts $options option
+do
+    case $option in
+#        z  ) example=${OPTARG}     ;;
+        c  ) chprobe_configcommit=true;probe=${OPTARG}       ;;
+        i  ) bbk_test=true;probe=${OPTARG}       ;;
+        r  ) probe_reboot=true;probe=${OPTARG}       ;;
+        h  ) usage; exit;;
+	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
+        \? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
+        :  ) echo "Missing option argument for -$OPTARG" >&2; exit 1;;
+        *  ) echo "Unimplemented option: -$OPTARG" >&2; exit 1;;
+    esac
+done
+
+shift $(($OPTIND - 1))
+
+if [ $probe != "false" ]; then # Only continue if probe is specified
+
+## Copy and commit configuration
+if [ $chprobe_configcommit = "true" ]; then
+ansible-playbook $PLAYDIR/configcommit --limit $probe -K $ansible_debug
+fi
+
+## BBK
+if [ $bbk_test = "true" ]; then
+
+# Pause crontab on probe and kill all running tests
+echo "Killing all current tests to avoid interference on ${probe}..."
+ansible $ansible_debug $probe -m shell -a "kill -9 $(pgrep -f 'iperf3 -c|tcp_iperf3|bbk')" &> $REDIRECT
+sleep 2; echo "Done.. Now running BBK on ${probe}..."
+ansible $ansible_debug $probe -m shell -a 'bbk_cli'
+fi
+
+## REBOOT
+if [ $probe_reboot = "true" ]; then
+read -r -p "Are you sure you want to reboot the probe? [y/N] " response
+case "$response" in
+    [yY][eE][sS]|[yY]) 
+        echo "Rebooting ${probe01}..."; adhoc_shell_sudo $probe 'reboot' &> $REDIRECT
+
+# Check if we can ping probe
+sleep 2
+check_probe=$(ansible $probe -m ping | grep -i unreach | wc -l) &> /dev/null
+if [ $check_probe -le 0 ]; then echo "Seems like the probe didn't reboot right away.. There might be jobs shutting down still, give it a few min"
+else
+echo 'Probe seems dead, all good :)'
+fi
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+fi
+
+else
+echo "probe not specified $probe ?! Aborting" && exit 1
+fi
