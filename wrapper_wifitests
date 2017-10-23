@@ -1,0 +1,224 @@
+#!/bin/bash
+# Version 0.1
+
+# Enable or disable AP checking
+ap_checking=true
+
+# Broadcom AP
+# In order to use this, the phy.sh script need to be in /var/ of the AP device and the screen session must be up to the eRouter
+
+# Celeno AP
+# The AP must have internet access and the firewall must be open for the servers SNMP calls
+
+# Configure the locations of external scripts and logdir
+CELENO_SCRIPT="/home/lordberre-server/screens/ap_physcripting/./celeno_iw-snmp_forloop.sh"
+BROADCOM_SCRIPT="/home/lordberre-server/screens/ap_physcripting/3384_expect_forloop AC:BC:32:9B:EC:F5 macpro_5m-nlos"
+iperf3log="/var/log/iperf3_wrapper.log"
+
+# Assign all vars
+AP_TYPE=false
+AP_LABEL=false
+AP_IP=false
+STA_MAC=false;STA_TYPE=false
+AP_RADIO=false
+CONSOLE=false
+IPERFSERVER=false
+TARGET=false
+downstream=false;upstream=false
+
+usage () {
+cat <<USAGE
+How to use: $0 -4 or -6 must be specified.
+    -d) Measure downstream to STA (mandatory)
+    -u) Measure upstream from STA (mandatory)
+    -p) Set iperf3 server IP (mandatory)
+    -a) Set ansible/STA target (mandatory)
+    -t) Set AP type ("celeno" or "broadcom") (mandatory)
+    -l) Set AP label (mandatory)
+    -s) Set STA type ("mac", "linux" or "win") (mandatory)
+    -m) Set STA Mac (format AA:BB:CC:DD:EE:FF) (mandatory)
+    -r) Set AP radio ("5ghz" or "2.4ghz") (mandatory)
+    -c) Set console name (Broadcom AP only)
+    -i) Set AP IP (celeno AP only)
+    -h) Show help
+    -v) Increase verbosity
+
+USAGE
+ }
+
+options='t:l:i:m:r:c:p:a:s:udhv'
+
+while getopts $options option
+do
+    case $option in
+        u  ) upstream=true;;
+        h  ) usage; exit;;
+        d  ) downstream=true;;
+        t ) AP_TYPE=${OPTARG};;
+        l  ) AP_LABEL=${OPTARG};;
+        i  ) AP_IP=${OPTARG};;
+        m  ) STA_MAC=${OPTARG};;
+        r  ) AP_RADIO=${OPTARG};;
+        c  ) CONSOLE=${OPTARG};; # Aka screen session name
+        p  ) IPERFSERVER=${OPTARG};;
+        a  ) TARGET=${OPTARG};;
+        s  ) STA_TYPE=${OPTARG};;
+        ? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
+        :  ) echo "Missing option argument for -$OPTARG" >&2; exit 1;;
+        *  ) echo "Unimplemented option: -$OPTARG" >&2; exit 1;;
+    esac
+done
+
+if [ $ap_checking = true ]; then
+	if [ $AP_TYPE = false ] || [ $AP_LABEL = false ] || [ $AP_RADIO = false ];then 
+echo "You forgot to use any of the following mandatory arguments:"
+echo "$(( set -o posix ; set ) | grep false)"
+echo
+exit 1
+	fi
+fi
+
+if [ $IPERFSERVER = false ] || [ $TARGET = false ] || [ $STA_TYPE = false ] || [ $STA_MAC = false ]
+then
+echo "You forgot to use any of the following mandatory arguments:"
+echo "$(( set -o posix ; set ) | grep false)"
+echo
+exit 1
+fi
+
+# Kill leftover scripts
+if [ $(pgrep -f 'celeno|3384_expect' | wc -l) -gt 1 ];then
+kill $(pgrep -f 'celeno|3384_expect') && echo Killed some leftover scripts..
+else echo "no leftover scripts detected (OK)"
+fi
+
+# Celeno AP
+if [ $AP_TYPE = "celeno" ]; then
+if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wlan1_0
+elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wlan0_0
+fi
+
+phy=vht # vht or ht
+REDIRECT="~/celenoap_data.txt" # Output file
+###
+##
+HOSTNAME="$(echo $STA_MAC | tr -d ':')"
+failcheck="$(snmpget -v2c -c private $IP .1.3.6.1.4.1.35604.2.3.101.0 | grep INT | wc -l)"
+
+ap_script () {
+if [ $ap_checking = true ];then
+	if [ $iperf3_check -ge 1 ];then # Check if iperf3 server is busy and continue if so
+	bash $CELENO_SCRIPT 1> /dev/null &
+	else echo "server is busy so not running AP script.."
+	fi
+else echo 'ap checking disabled.'
+fi
+}
+
+#### VHT TEMPLATE # Interal
+#vhtparse="snmpset -d -v2c -c private \$IP .1.3.6.1.4.1.35604.2.3.103.0 s \"iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'tx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e \"s/^/\$direction /\" | awk '{print \$1,\$3,\$7,\$10,\$11,\$12,\$13}' | tr -d 'MHz' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME tx_linkstats_vht[1337]: /\" && iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'rx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e \"s/^/\$direction /\" | awk '{print \$1,\$3,\$7,\$10,\$11,\$12,\$13}' | tr -d 'MHz' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME rx_linkstats_vht[1337]: /\" && iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'bytes|packets|retries|failed' | xargs | tr -d 'rx|tx|bytes|packets|retries|failed:' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME iw_counters[1337]: /\" | tr -s ' '\""
+####
+
+#### VHT TEMPLATE # External
+#vhtparse="snmpset -v2c -c private \$IP .1.3.6.1.4.1.35604.2.3.103.0 s \"iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'tx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e \"s/^/\$direction /\" | awk '{print \$1,\$3,\$7,\$10,\$11,\$12,\$13}' | tr -d 'MHz' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME tx_linkstats_vht[1337]: /\" && iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'rx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e \"s/^/\$direction /\" | awk '{print \$1,\$3,\$7,\$10,\$11,\$12,\$13}' | tr -d 'MHz' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME rx_linkstats_vht[1337]: /\" && iw \$RADIO station dump | grep -i \$STA_MAC -A 17 | egrep 'bytes|packets|retries|failed' | xargs | tr -d 'rx|tx|bytes|packets|retries|failed:' | sed -e \"s/^/\$(date \"+%b %d %H:%M:%S\") \$HOSTNAME iw_counters[1337]: /\" | tr -s ' '\""
+####
+
+#### VHT TEMPLATE # Without syslog
+#vhtparse_noparse="snmpset -v2c -c private \$IP .1.3.6.1.4.1.35604.2.3.103.0 s \"iw \$RADIO station dump\""
+####
+#eval $vhtparse && sleep 1 && snmpget -v2c -c private $IP .1.3.6.1.4.1.35604.2.3.104.0
+
+if [ $failcheck 2> /dev/null -eq 1 ];then 
+
+# Kill all old loops
+# if $(pgrep -f celeno | wc -l) -gt 1;then kill $(pgrep -f celeno | head -1);fi
+
+# For loop
+for x in {1..9};do
+
+# Fetch STA TX values
+snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw $AP_RADIO station dump" && sleep 1 && snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 17 | egrep 'tx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e "s/^/$AP_LABEL /" | awk '{print $1,$3,$7,$10,$11,$12,$13}' | tr -d 'MHz' | sed -e "s/^/$(date "+%b %d %H:%M:%S") $HOSTNAME tx_linkstats_$phy[1337]: /" >> $REDIRECT
+
+# Fetch STA RX values
+snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw $AP_RADIO station dump" && sleep 1 && snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 17 | egrep 'rx bitrate|signal:' | xargs | sed 's/\[.*\]//' | tr -d 'short|GI' | sed 's/\<VHT-NSS\>//g' | sed -e "s/^/$AP_LABEL /" | awk '{print $1,$3,$7,$10,$11,$12,$13}' | tr -d 'MHz' | sed -e "s/^/$(date "+%b %d %H:%M:%S") $HOSTNAME rx_linkstats_$phy[1337]: /" >> $REDIRECT
+
+# Fetch STA counters
+snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw $AP_RADIO station dump" && sleep 1 && snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 17 | egrep 'bytes|packets|retries|failed' | xargs | tr -d 'rx|tx|bytes|packets|retries|failed:' | sed -e "s/^/$(date "+%b %d %H:%M:%S") $HOSTNAME iw_counters[1337]: /" | tr -s ' ' >> $REDIRECT
+done
+
+else echo "Got an error, aborting" && exit 1
+fi
+
+fi 
+
+# Broadcom AP
+if [ $AP_TYPE = "broadcom" ]; then
+
+if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wl1
+elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wl0
+fi
+
+ap_script () {
+if [ $ap_checking = true ];then
+	if [ $iperf3_check -ge 1 ];then # Check if iperf3 server is busy and continue if so
+	screen -S $CONSOLE -X stuff "/var/./phy.sh $AP_LABEL $AP_RADIO $STA_MAC \n"
+	else echo "server is busy so not running AP script.."
+	fi
+else echo 'ap checking disabled.'
+fi
+}
+fi
+
+init_vars () {
+ansible_check="$(ansible $TARGET -m ping | grep SUCCESS | wc -l)"
+iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 | grep busy | wc -l)"
+}
+init_vars 
+
+# Start test function
+start_test () {
+        if [ $ansible_check -ge 1 ] && [ $iperf3_check -le 0 ];then
+sleep 1
+ansible $TARGET -m shell -a "nohup /bin/bash $LOCALSCRIPT $IPERFSERVER &" >> $iperf3log
+sleep 1; init_vars
+# ap_script
+else echo "Aborting because target is either unreachable ($ansible_check) or the iperf3 server is busy ($iperf3_check)" && exit 1
+fi
+}
+
+# Loop to try to mitigate from not properly ran tests..
+failcheck () {
+checkbusy="$(tail -2 $iperf3log | grep SUCCESS | wc -l)"
+busyfail=0
+while [ $checkbusy -eq 0 ]; do
+echo "no entry in the log, test must've failed, trying again.."
+sleep $[ ( $RANDOM % 1 ) + 3]s &&
+start_test
+checkbusy="$(tail -2 $iperf3log | grep SUCCESS | wc -l)"
+
+# Anti fail
+busyfail=$(( $busyfail + 1 ))
+if [ $busyfail -ge 20 ]; then
+echo "[$logtag] Giving up, since we didn't manage to access the server for over $busyfail retries. How can it be this busy?" | logger -p local5.err && break
+fi
+done
+}
+
+#
+# Start doing stuff
+
+if [ $upstream = true ]; then 
+if [ $STA_TYPE = mac ];then 
+# Macs have different scripts depending on direction so..
+LOCALSCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client-logstash.sh"
+fi
+elif [ $STA_TYPE = linux ];then echo 'aborting, not implemented' && exit 1
+elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
+start_test;failcheck;ap_script
+fi
+
+if [ $downstream = true ]; then
+# Macs have different scripts depending on direction so..
+LOCALSCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client_reversed-logstash.sh"
+start_test;failcheck;ap_script
+fi
