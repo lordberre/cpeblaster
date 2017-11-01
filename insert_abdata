@@ -2,7 +2,8 @@
 
 # Usage "./script data.txt >> /var/log/chprobe_ab.log"
 # Use this to add missing hostname $ sed 's/apachebench/$hostname apachebench/g' somefile | tr -s ' '
-
+# wk '{$6="DATA "$6;print $0}' # Add data between columns (column 6)
+# sed -i 's@OLDDATA@NEWDATA@g' # Swap words
 while read line
 do
     printf "%s\n" "$line"
