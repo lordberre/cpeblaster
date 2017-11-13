@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 0.1
+# Version 0.2
 
 # Enable or disable AP checking
 ap_checking=true
@@ -42,7 +42,7 @@ How to use: $0 -4 or -6 must be specified.
     -l) Set AP label (mandatory)
     -s) Set STA type ("mac", "linux" or "win") (mandatory)
     -m) Set STA Mac (format AA:BB:CC:DD:EE:FF) (mandatory)
-    -r) Set AP radio ("5ghz" or "2.4ghz") (mandatory)
+    -r) Set AP radio ("5ghz" or "2.4ghz" or "bs" (bandsteering)) (mandatory)
     -c) Set console name (Broadcom AP only)
     -i) Set AP IP (celeno AP only)
     -y) Extra AP label 1
@@ -103,11 +103,32 @@ fi
 
 # Celeno AP
 if [ $AP_TYPE = "celeno" ]; then
-if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wlan1_0
-elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wlan0_0
+ if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wlan1_0
+ elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wlan0_0
+ elif [ $AP_RADIO = "bs" ]; then 
+  snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw wlan1_0 station dump" &&
+  declare -i wlan1_0=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 1 | grep inactive | awk {'print $3'}` && 
+  snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw wlan0_0 station dump" &&
+  declare -i wlan0_0=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 1 | grep inactive | awk {'print $3'}` &&
+   if [ $wlan1_0 -le 0 ];then AP_RADIO=wlan0_0
+   elif [ $wlan0_0 -le 0 ]; then AP_RADIO=wlan1_0
+   elif [ $wlan1_0 -eq $wlan0_0 ]; then echo 'STA not detected on any radio!'
+   elif [ $wlan1_0 -gt $wlan0_0 ]; then AP_RADIO=wlan0_0 # However has been idle for longest is probably an outdated entry
+    else AP_RADIO=wlan1_0
+   fi
 fi
 
-phy=vht # vht or ht
+# 2.4 Ghz is always HT or legacy
+if [ $AP_RADIO = wlan0_0 ]; then phy=ht
+elif [ $AP_RADIO = wlan1_0 ]; then
+
+# This method only works if STA has either TX/RX rate with VHT caps
+declare -i vht_detect=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 11 | egrep -i 'vht|nss|80mhz' | wc -l`
+ if [ $vht_detect -ge 1 ]; then phy=vht
+ else phy=ht
+ fi
+fi
+
 ###
 ##
 HOSTNAME="$(echo $STA_MAC | tr -d ':')"
