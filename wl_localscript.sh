@@ -4,6 +4,7 @@
 # Fetch phy data and from all associated stations (-p)
 # Fetch capabilites from all associated stations (-c)
 # Fetch chanim stats (-s) on both radios
+# Note: Chaim fetching will probably eat your cpu if it's weak.. Relaxing the sleep timers could help a bit.
 # Usage example: "ssh root@x.x.x.x 'sh -s' -- < wl_localscript.sh -c"
 
 # Exit if no argument is given
@@ -185,6 +186,11 @@ wl_loop
 		fetch_data | sort
 		fi
 	fi
+
+# Chanim watchdog
+if [ `pgrep -f 'sleep 10' | wc -l` -ge 0 ]; then
+while sleep 10;do watch_var=`pgrep -f 'sleep 2' | wc -l`; if [ $watch_var -eq 0 2> /dev/null ];then wl_loop;fi;done &
+fi
 
 # Reference
 # chanspec tx   inbss   obss   nocat   nopkt   doze     txop     goodtx  badtx   glitch   badplcp  knoise  idle  timestamp
