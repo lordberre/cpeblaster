@@ -1,10 +1,17 @@
 #!/bin/bash
+# Version 1.1
 
 # Vars
 probe=false
 bbk_test=false
+icmp_test=false
 chprobe_configcommit=false
 probe_reboot=false
+chprobe_fetchcrontab=false
+chprobe_collisiondebug=false
+chprobe_ansibleping=false
+chprobe_restartnetwork=false
+chprobe_fetchcommits=false
 REDIRECT="/dev/null"
 PLAYDIR="/etc/chprobe/plays"
 
@@ -31,21 +38,24 @@ MAGENTA=$(tput setaf 6)
 # Usage/help
 usage () {
 cat <<USAGE
-$NOREMAL How to use: chprobe_mgmt
+How to use: chprobe_mgmt
 Argument + <probename> or use 'chprobes' to run command on all probes
 Example: "chprobe_mgmt -c chprobe03"
 
 $NORMAL##### GLOBAL $RED
 $GREEN    -v) Increase verbosity $RED
 $NORMAL##### MANAGEMENT    $GREEN
-    -c) Apply configuration for probes. $RED
+    -c) Apply configuration for probes. $GREEN
+    -t) Fetch crontab from probes. $GREEN
+    -d) Fetch all iperf3/bbk events from probes (collision debug). $GREEN
     -p) Ping probes (via Ansible module) $RED
-$GREEN    -r) Reboot probes (requires sudo) $RED
-    -g) Restart Network interface on probes $RED
+$GREEN    -r) Reboot probes (requires sudo) $GREEN
+    -g) Restart Network interface on probes (requires sudo) $GREEN
+    -f) Fetch commit logs from probes (last 5 lines) $RED
 $NORMAL##### TESTS $RED
-$GREEN    -i) Run a BBK test and fetch results $RED
+$GREEN    -b) Run a BBK test and fetch results $RED
     -b) Run a iperf3 TCP test and fetch results $RED
-    -tp) Send PING echos to target via probe $RED
+    -i) Send PING echos to target via probe $RED
 $NORMAL##### WIFI $RED
     -wl) Set WiFi label to append on iperf3 tests $RED
     -w24g) Attempt to move probe to 2.4Ghz $RED 
@@ -62,13 +72,22 @@ $NORMAL Only arguments in $GREEN GREEN $NORMAL are working currently.
 USAGE
  }
 
-options=':z:i:r:c:hv'
+options=':z:b:r:c:t:d:p:g:f:i:hv'
+
 while getopts $options option
 do
     case $option in
 #        z  ) example=${OPTARG}     ;;
         c  ) chprobe_configcommit=true;probe=${OPTARG}       ;;
-        i  ) bbk_test=true;probe=${OPTARG}       ;;
+        t  ) chprobe_fetchcrontab=true;probe=${OPTARG}       ;;
+        d  ) chprobe_collisiondebug=true;probe=${OPTARG}       ;;
+        p  ) chprobe_ansibleping=true;probe=${OPTARG}       ;;
+        g  ) chprobe_restartnetwork=true;probe=${OPTARG}       ;;
+        f  ) chprobe_fetchcommits=true;probe=${OPTARG}       ;;
+        b  ) bbk_test=true;probe=${OPTARG}       ;;
+        i  ) icmp_test=true;probe=${OPTARG}       ;;
+        a  ) agg_test=true;agg_probes=${OPTARG}       ;;
+        g  ) agg_probes=true;probe_array=${OPTARG}       ;;
         r  ) probe_reboot=true;probe=${OPTARG}       ;;
         h  ) usage; exit;;
 	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
@@ -87,6 +106,31 @@ if [ $chprobe_configcommit = "true" ]; then
 ansible-playbook $PLAYDIR/configcommit --limit $probe -K $ansible_debug
 fi
 
+## Fetch commits
+if [ $chprobe_fetchcommits = "true" ]; then
+ansible $ansible_debug $probe -m shell -a 'tail -5 /var/log/chprobe_commits.log'
+fi
+
+## Fetch crontab
+if [ $chprobe_fetchcrontab = "true" ]; then
+ansible $ansible_debug $probe -m shell -a 'cat /etc/crontab'
+fi
+
+## Fetch all iperf3 and bbk events (collision debug)
+if [ $chprobe_collisiondebug = "true" ]; then
+ansible $ansible_debug $probe -m shell -a '/usr/local/sbin/chprobe_collisiondebug'
+fi
+
+## Ping probes via Ansible
+if [ $chprobe_ansibleping = "true" ]; then
+ansible $ansible_debug $probe -m ping
+fi
+
+## Restart NetworkManager
+if [ $chprobe_restartnetwork = "true" ]; then
+ansible $ansible_debug $probe -m systemd -a "name=NetworkManager state=restarted" -b -K
+fi
+
 ## BBK
 if [ $bbk_test = "true" ]; then
 
@@ -95,6 +139,139 @@ echo "Killing all current tests to avoid interference on ${probe}..."
 ansible $ansible_debug $probe -m shell -a "kill -9 $(pgrep -f 'iperf3 -c|tcp_iperf3|bbk')" &> $REDIRECT
 sleep 2; echo "Done.. Now running BBK on ${probe}..."
 ansible $ansible_debug $probe -m shell -a 'bbk_cli'
+fi
+
+## Ping echo
+if [ $icmp_test = "true" ]; then
+ICMP_COUNT=5;ICMP_SIZE=56;ICMP_INTERVAL=1;ICMP_TARGET=ping.sunet.se
+ansible $ansible_debug $probe -m shell -a "ping -w $ICMP_COUNT -s $ICMP_SIZE -i $ICMP_INTERVAL $ICMP_TARGET"
+fi
+
+## Aggregated throughput test ########### DRAFT
+if [ $agg_test = "true" ]; then
+
+# Iperf3 aggregated test settings
+agg_debug=false # Change to "true" for debug mode. Note: Correct parsing etc will not work in debug mode
+IPERF_DURATION=30 # 30 sec
+IPERF_SESSIONS=15 # 15 sessions
+iperf3_direction=false
+
+# Change settings depending on direction
+if [ iperf3_direction = "downstream" ];then 
+IPERF_DIRECTION="-R" # Downstream (leave var empty for upstream)
+elif [ iperf3_direction = "upstream" ];then
+IPERF_DIRECTION=""
+fi
+
+# Split array in to separate variables
+IFS=', ' read -r -a array <<< "$probe_array"
+probe_arg="${array[0]}"
+probe_arg2="${array[1]}"
+probe_arg3="${array[2]}"
+probe_arg4="${array[3]}"
+
+# Vars
+count=$(( ( RANDOM % 9999 )  + 1 ))
+iperf3log="/var/log/iperf3_agg.log"
+logfacility_iperf3=local3.debug
+
+agg_presentation () {
+if [ $agg_debug = "false" ];then
+egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$direction /" | logger -t iperf3tcp[$(echo $count)] -p $logfacility_iperf3
+elif [ $agg_debug = "true" ];then echo 'Parsing disabled. Use journal or tail the log file'
+fi
+}
+
+busy_failcheck () {
+checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
+busyfail=0
+while [ $checkbusy -eq 1 ]; do
+echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info && 
+sleep $[ ( $RANDOM % 5 ) + 11]s && 
+
+checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
+
+# Anti fail
+busyfail=$(( $busyfail + 1 ))
+if [ $busyfail -ge 20 ]; then
+echo "[$logtag] Giving up, since we didn't manage to access the server for over $busyfail retries. How can it be this busy?" | logger -p local5.err && break
+fi
+done
+}
+
+check_aggservers () {
+# Make sure all servers are available
+iperf3_busy=`iperf3 -c $1 -t 1 | grep busy`
+declare -i iperf3_busyint=`printf "$iperf3_busystatus" | wc -l`
+printf "$iperf3_busystatus" >> $iperf3log
+if [ $iperf3_busyint -eq 1 ]; then server_available=false
+else server_busy=true && busy_failcheck
+fi
+}
+
+ansible_iperf3 () {
+if [ $agg_probes -eq 2 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+for servers in {$AGG_SERVER1,$AGG_SERVER2};do
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
+done
+
+elif [ $agg_probes -eq 3 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
+for servers in {$AGG_SERVER1,$AGG_SERVER2,$AGG_SERVER3};do
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
+ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
+done
+
+elif[ $agg_probes -eq 4 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
+check_aggservers $AGG_SERVER4 && echo "$AGG_SERVER4 is available? $server_available"
+for servers in {$AGG_SERVER1,$AGG_SERVER2,$AGG_SERVER3,$AGG_SERVER4};do
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
+ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
+ansible $ansible_debug $probe_arg4 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER4"
+done
+
+else echo "$agg_probes is outside of the supported range (2-4), aborting" && exit 1
+fi
+}
+
+# Configure servers
+AGG_SERVER1="iperf.comhem.com -p 5210"
+AGG_SERVER2="iperf.comhem.com -p 5209"
+AGG_SERVER3="iperf.comhem.com -p 5208"
+AGG_SERVER4="iperf.comhem.com -p 5207"
+AGG_SERVER5="iperf.comhem.com -p 5206"
+AGG_SERVER6="iperf.comhem.com -p 5205"
+ if [ $agg_probes -eq 2 ]
+ check_aggservers $AGG_SERVER1 
+ check_aggservers $AGG_SERVER2
+ elif [ $agg_probes -eq 3 ]
+ check_aggservers $AGG_SERVER1
+ check_aggservers $AGG_SERVER2
+ check_aggservers $AGG_SERVER3
+ elif [ $agg_probes -eq 4 ] 
+ check_aggservers $AGG_SERVER1
+ check_aggservers $AGG_SERVER2
+ check_aggservers $AGG_SERVER3
+ check_aggservers $AGG_SERVER4
+ fi
+
+# Check if the selected probes are responsible, otherwise abort
+check_probe=$(ansible $probe -m ping | grep -i unreach | wc -l) &> /dev/null
+	if [ $check_probe -le 1 ]; then echo "One or more probes are unreachable, aborting" && exit 1
+	else
+	echo 'Probes are reachable, continuing'
+	ansible_iperf3
+	fi
 fi
 
 ## REBOOT
