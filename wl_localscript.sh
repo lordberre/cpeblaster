@@ -36,13 +36,13 @@ gw_mac=`sed 's/:/-/g' /sys/class/net/eth4/address`
 		syslog_program=$1
                 opt_arg1=$2
                 opt_arg2=$3
-		opt_arg3=$4
-		sed -e "s@^@<$(echo $count)> $(date "+%b %d %H:%M:%S") OpenWrt[MAC=$gw_mac][S/N=$gw_serial] $syslog_program: $opt_arg1 $opt_arg2 $opt_arg3 @" | tr -s ' '
+		sed -e "s@^@<$(echo $count)> $(date "+%b %d %H:%M:%S") OpenWrt[MAC=$gw_mac][S/N=$gw_serial] $syslog_program: [$AREA] $opt_arg1 $opt_arg2 @" | tr -s ' '
 }
 else echo 'Aborting because no syslog format was chosen: "--wrt_syslog, --linux_syslog"' && exit 1
 fi
 
-if [ $3 = "--area" 2> /dev/null ]; then AREA=[$4]
+if [ $3 = "--area" 2> /dev/null ]; then AREA=$4
+else AREA=default
 fi
 
 if [ $1 = "-p" ]; then
@@ -61,9 +61,10 @@ stamac_clean=`printf $mac | tr -d ':'`
 #wl -i $radio sta_info $mac | egrep 'frame:' | tr -d 'per|antenna|rssi|of|last|rx|data|frame|:|average|noise|floor|frames' | xargs | syslog_parse asdf
 #wl -i $radio sta_info $mac | egrep 'noise' | tr -d 'per|antenna|rssi|of|last|rx|data|frame|:|average|noise|floor|frames' | xargs | syslog_parse asdf
 
-wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'tx' | tr -d 'rate||of|last|tx|pkt|:|kbps|-' | xargs | awk '{print $1}' | syslog_parse 389ac_txphyrate $AREA $radio [$stamac_clean]
+wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'tx' | tr -d 'rate||of|last|tx|pkt|:|kbps|-' | xargs | awk '{print $1}' | syslog_parse 389ac_txphyrate $radio [$stamac_clean]
 
-wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'rx' | tr -d 'rate|of|last|rx|:kbps' | xargs | syslog_parse 389ac_rxphyrate $AREA $radio [$stamac_clean]
+wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'rx' | tr -d 'rate|of|last|rx|:kbps' | xargs | syslog_parse 389ac_rxphyrate $radio [$stamac_clean]
+	sleep 1
 	done
 done
 }
@@ -71,8 +72,8 @@ done
 if [ $logformat = "wrt" ]; then
 physta_func wl0 >> $syslog_file
 physta_func wl1 >> $syslog_file
-wl -i wl1 nrate | awk {'print $3,$5,$8,$9'} | tr -d 'bw' | syslog_parse 389ac_values_5ghz $AREA >> $syslog_file
-wl -i wl0 nrate | awk {'print $3,$6,$7,$8'} | tr -d 'bw' | syslog_parse 389ac_values_24ghz $AREA >> $syslog_file
+wl -i wl1 nrate | awk {'print $3,$5,$8,$9'} | tr -d 'bw' | syslog_parse 389ac_values_5ghz >> $syslog_file
+wl -i wl0 nrate | awk {'print $3,$6,$7,$8'} | tr -d 'bw' | syslog_parse 389ac_values_24ghz >> $syslog_file
 
 else
 physta_func wl0
@@ -98,7 +99,7 @@ radios="wl0 wl1"
 
 capa_parse () {
 input_radio=$1
-syslog_parse 389ac_capa_$input_radio $AREA
+syslog_parse 389ac_capa_$input_radio
 }
 
 capa_func () {
@@ -172,12 +173,12 @@ wl_loop() {
 if [ `pgrep -f 'sleep 2' | wc -l` -eq 0 ]; then # Only even attempt to start if there's nothing running.
 
 # 2.4Ghz "daemon"
-	while sleep 2;do wl -i wl0 chanim_stats | tail -1 | awk '$1=$1' | syslog_parse 389ac_chanim_24ghz $AREA >> $wl0_file
+	while sleep 2;do wl -i wl0 chanim_stats | tail -1 | awk '$1=$1' | syslog_parse 389ac_chanim_24ghz >> $wl0_file
 	if [ `ls -l1 $wl0_file | awk {'print $3'}` -ge 5000000 ]; then rm -f $wl0_file # Delete log on 5MB
 	fi;done &
 
 # 5Ghz "daemon"
-	while sleep 2;do wl -i wl1 chanim_stats | tail -1 | awk '$1=$1' | syslog_parse 389ac_chanim_5ghz $AREA >> $wl1_file
+	while sleep 2;do wl -i wl1 chanim_stats | tail -1 | awk '$1=$1' | syslog_parse 389ac_chanim_5ghz >> $wl1_file
 	if [ `ls -l1 $wl1_file | awk {'print $3'}` -ge 5000000 ]; then rm -f $wl1_file
 	fi;done &
 else kill_loop
@@ -218,8 +219,8 @@ wl_loop
         start_watchdog () {
         while sleep 10;do watch_var=`pgrep -f 'sleep 2' | wc -l`
         if [ $watch_var -eq 0 2> /dev/null ];then wl_loop
-        elif [ $watch_var -eq 1 2> /dev/null ]i;then kill_loop
-        elif [ $watch_var -gt 2 2> /dev/null ]i;then kill_loop
+        elif [ $watch_var -eq 1 2> /dev/null ];then kill_loop
+        elif [ $watch_var -gt 2 2> /dev/null ];then kill_loop
         fi
 done &
 }
@@ -239,8 +240,8 @@ fi
 elif [ $1 = "-t" ]; then # TODO
 # sed -i 's@quick_scan=0@quick_scan=1@g' /etc/wireless_acs.conf # quick scan (needs hostapd reload)
 # hostapd_cli "acs rescan" # Performs a scan (dangerous)
-hostapd_cli "acs debug dumpacsmeas topic bss radio_id=0" | grep -v channel | awk '$1=$1' | syslog_parse 389ac_envchan5ghz $AREA
-hostapd_cli "acs debug dumpacsmeas topic bss radio_id=1" | grep -v channel | awk '$1=$1' | syslog_parse 389ac_envchan24ghz $AREA
+hostapd_cli "acs debug dumpacsmeas topic bss radio_id=0" | grep -v channel | awk '$1=$1' | syslog_parse 389ac_envchan5ghz
+hostapd_cli "acs debug dumpacsmeas topic bss radio_id=1" | grep -v channel | awk '$1=$1' | syslog_parse 389ac_envchan24ghz
 # hostapd_cli "acs debug dumpacsmeas topic bsslist radio_id=0" # SSID/RSSI/capabilites etc
 
 else echo 'no correct argument given, aborting' && exit 1
