@@ -12,6 +12,7 @@ chprobe_collisiondebug=false
 chprobe_ansibleping=false
 chprobe_restartnetwork=false
 chprobe_fetchcommits=false
+iperf3_direction=false
 REDIRECT="/dev/null"
 PLAYDIR="/etc/chprobe/plays"
 
@@ -72,7 +73,7 @@ $NORMAL Only arguments in $GREEN GREEN $NORMAL are working currently.
 USAGE
  }
 
-options=':z:b:r:c:t:d:p:g:f:i:hv'
+options=':z:b:r:c:t:d:p:g:f:i:a:j:m:hv'
 
 while getopts $options option
 do
@@ -86,8 +87,9 @@ do
         f  ) chprobe_fetchcommits=true;probe=${OPTARG}       ;;
         b  ) bbk_test=true;probe=${OPTARG}       ;;
         i  ) icmp_test=true;probe=${OPTARG}       ;;
-        a  ) agg_test=true;agg_probes=${OPTARG}       ;;
-        g  ) agg_probes=true;probe_array=${OPTARG}       ;;
+        a  ) agg_test=true;probe=true;agg_probes=${OPTARG}       ;;
+        j  ) probe_array=${OPTARG}       ;;
+        m  ) iperf3_direction=${OPTARG}       ;;
         r  ) probe_reboot=true;probe=${OPTARG}       ;;
         h  ) usage; exit;;
 	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
@@ -154,17 +156,16 @@ if [ $agg_test = "true" ]; then
 agg_debug=false # Change to "true" for debug mode. Note: Correct parsing etc will not work in debug mode
 IPERF_DURATION=30 # 30 sec
 IPERF_SESSIONS=15 # 15 sessions
-iperf3_direction=false
 
 # Change settings depending on direction
-if [ iperf3_direction = "downstream" ];then 
+if [ $iperf3_direction = "downstream" ];then 
 IPERF_DIRECTION="-R" # Downstream (leave var empty for upstream)
-elif [ iperf3_direction = "upstream" ];then
+elif [ $iperf3_direction = "upstream" ];then
 IPERF_DIRECTION=""
 fi
 
 # Split array in to separate variables
-IFS=', ' read -r -a array <<< "$probe_array"
+IFS=',' read -r -a array <<< "$probe_array"
 probe_arg="${array[0]}"
 probe_arg2="${array[1]}"
 probe_arg3="${array[2]}"
@@ -172,75 +173,23 @@ probe_arg4="${array[3]}"
 
 # Vars
 count=$(( ( RANDOM % 9999 )  + 1 ))
-iperf3log="/var/log/iperf3_agg.log"
+iperf3log="/home/jump/.chprobe/logs/iperf3_agg.log"
 logfacility_iperf3=local3.debug
 
 agg_presentation () {
 if [ $agg_debug = "false" ];then
-egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$direction /" | logger -t iperf3tcp[$(echo $count)] -p $logfacility_iperf3
+egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$iperf3_direction /" | logger -t iperf3tcp[$(echo $count)] -p $logfacility_iperf3
 elif [ $agg_debug = "true" ];then echo 'Parsing disabled. Use journal or tail the log file'
 fi
 }
 
-busy_failcheck () {
-checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
-busyfail=0
-while [ $checkbusy -eq 1 ]; do
-echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info && 
-sleep $[ ( $RANDOM % 5 ) + 11]s && 
-
-checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
-
-# Anti fail
-busyfail=$(( $busyfail + 1 ))
-if [ $busyfail -ge 20 ]; then
-echo "[$logtag] Giving up, since we didn't manage to access the server for over $busyfail retries. How can it be this busy?" | logger -p local5.err && break
-fi
-done
-}
-
 check_aggservers () {
 # Make sure all servers are available
-iperf3_busy=`iperf3 -c $1 -t 1 | grep busy`
+iperf3_busystatus=`iperf3 -c $1 -t 1 | grep busy`
 declare -i iperf3_busyint=`printf "$iperf3_busystatus" | wc -l`
 printf "$iperf3_busystatus" >> $iperf3log
 if [ $iperf3_busyint -eq 1 ]; then server_available=false
-else server_busy=true && busy_failcheck
-fi
-}
-
-ansible_iperf3 () {
-if [ $agg_probes -eq 2 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-for servers in {$AGG_SERVER1,$AGG_SERVER2};do
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
-done
-
-elif [ $agg_probes -eq 3 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
-for servers in {$AGG_SERVER1,$AGG_SERVER2,$AGG_SERVER3};do
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
-ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
-done
-
-elif[ $agg_probes -eq 4 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
-check_aggservers $AGG_SERVER4 && echo "$AGG_SERVER4 is available? $server_available"
-for servers in {$AGG_SERVER1,$AGG_SERVER2,$AGG_SERVER3,$AGG_SERVER4};do
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
-ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
-ansible $ansible_debug $probe_arg4 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER4"
-done
-
-else echo "$agg_probes is outside of the supported range (2-4), aborting" && exit 1
+else server_available=true
 fi
 }
 
@@ -251,26 +200,60 @@ AGG_SERVER3="iperf.comhem.com -p 5208"
 AGG_SERVER4="iperf.comhem.com -p 5207"
 AGG_SERVER5="iperf.comhem.com -p 5206"
 AGG_SERVER6="iperf.comhem.com -p 5205"
- if [ $agg_probes -eq 2 ]
- check_aggservers $AGG_SERVER1 
- check_aggservers $AGG_SERVER2
- elif [ $agg_probes -eq 3 ]
- check_aggservers $AGG_SERVER1
- check_aggservers $AGG_SERVER2
- check_aggservers $AGG_SERVER3
- elif [ $agg_probes -eq 4 ] 
- check_aggservers $AGG_SERVER1
- check_aggservers $AGG_SERVER2
- check_aggservers $AGG_SERVER3
- check_aggservers $AGG_SERVER4
- fi
+
+ansible_iperf3 () {
+if [ $agg_probes -eq 2 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation &
+echo "Test for $probe_arg and $AGG_SERVER1 started: $(pgrep -fa $probe_arg)"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2" | agg_presentation &
+echo "Test for $probe_arg2 and $AGG_SERVER2 started: $(pgrep -fa $probe_arg2)"
+
+elif [ $agg_probes -eq 3 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
+ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
+
+elif [ $agg_probes -eq 4 ]; then
+check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
+check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
+check_aggservers $AGG_SERVER4 && echo "$AGG_SERVER4 is available? $server_available"
+ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
+ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
+ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
+ansible $ansible_debug $probe_arg4 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER4"
+
+else echo "$agg_probes is outside of the supported range (2-4), aborting" && exit 1
+fi
+}
+
+busy_loop () {
+# Busy loop
+checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
+busyfail=0
+while [ $checkbusy -eq 1 ]; do
+echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info &&
+sleep $[ ( $RANDOM % 5 ) + 11]s &&
+
+# Anti fail
+busyfail=$(( $busyfail + 1 ))
+if [ $busyfail -ge 20 ]; then
+echo "[$logtag] Giving up, since we didn't manage to access the server for over $busyfail retries. How can it be this busy?" | logger -p local5.err && break
+fi
+done
+}
 
 # Check if the selected probes are responsible, otherwise abort
-check_probe=$(ansible $probe -m ping | grep -i unreach | wc -l) &> /dev/null
-	if [ $check_probe -le 1 ]; then echo "One or more probes are unreachable, aborting" && exit 1
+check_probe=$(ansible $probe_array -m ping | grep -i unreach | wc -l) &> /dev/null
+	if [ $check_probe -ge 1 ]; then echo "One or more probes are unreachable, aborting" && exit 1
 	else
 	echo 'Probes are reachable, continuing'
-	ansible_iperf3
+	busy_loop;ansible_iperf3
 	fi
 fi
 
