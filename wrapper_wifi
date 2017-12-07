@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 0.2
+# Version 0.3
 
 # Enable or disable AP checking
 ap_checking=true
@@ -105,11 +105,11 @@ fi
 if [ $AP_TYPE = "celeno" ]; then
  if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wlan1_0
  elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wlan0_0
- elif [ $AP_RADIO = "bs" ]; then 
+ elif [ $AP_RADIO = "bs" ]; then
+  snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw wlan0_0 station dump" &&
+  declare -i wlan0_0=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 1 | grep inactive | awk {'print $3'}` && 
   snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw wlan1_0 station dump" &&
   declare -i wlan1_0=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 1 | grep inactive | awk {'print $3'}` && 
-  snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw wlan0_0 station dump" &&
-  declare -i wlan0_0=`snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 1 | grep inactive | awk {'print $3'}` &&
    if [ $wlan1_0 -le 0 ];then AP_RADIO=wlan0_0
    elif [ $wlan0_0 -le 0 ]; then AP_RADIO=wlan1_0
    elif [ $wlan1_0 -eq $wlan0_0 ]; then echo 'STA not detected on any radio!'
@@ -170,7 +170,8 @@ snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw $AP_RADIO stat
 snmpset -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.103.0 s "iw $AP_RADIO station dump" && sleep 1 && snmpget -v2c -c private $AP_IP .1.3.6.1.4.1.35604.2.3.104.0 | grep -i $STA_MAC -A 17 | egrep 'bytes|packets|retries|failed' | xargs | tr -d 'rx|tx|bytes|packets|retries|failed:' | sed -e "s/^/$AP_LABEL /" | sed -e "s/^/$(date "+%b %d %H:%M:%S") $HOSTNAME iw_counters_ap[1337]: $LABEL1 $LABEL2 /" | tr -s ' ' >> $REDIRECT
 done
 
-else echo "Got an error, aborting" && exit 1
+# What to do if SNMP isn't working?
+else echo "Got an SNMP error, continuing anyway" # && exit 1
 fi
         else echo "server is not busy so not running AP script.."
         fi
@@ -203,16 +204,19 @@ fi
 fi
 
 init_vars () {
-ansible_check="$(ansible $TARGET -m ping | grep SUCCESS | wc -l)"
+ansible_status="$(ansible $TARGET -m ping)"
+ansible_check="$(printf "$ansible_status" | grep SUCCESS | wc -l)"
 iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 | grep busy | wc -l)"
 }
+# Init ansible/iperf check and save the status for later use
 init_vars 
+printf "$ansible_status" >> $iperf3log
 
 # Start test function
 start_test () {
         if [ $ansible_check -ge 1 ] && [ $iperf3_check -le 0 ];then
 sleep 1
-ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 -f $IPERFSERVER &" >> $iperf3log
+ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 -f $IPERFSERVER &" >> $iperf3log &
 sleep 1; init_vars
 # ap_script
 else echo "Aborting because target is either unreachable ($ansible_check) or the iperf3 server is busy ($iperf3_check)" && exit 1
@@ -233,13 +237,13 @@ fi
 
 # Loop to try to mitigate from not properly ran tests..
 failcheck () {
-checkbusy="$(tail -2 $iperf3log | grep SUCCESS | wc -l)"
+checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS | wc -l)"
 busyfail=0
 while [ $checkbusy -eq 0 ]; do
 echo "no entry in the log, test must've failed, trying again.."
 sleep $[ ( $RANDOM % 1 ) + 3]s &&
 if [ $STA_TYPE = mac ];then mac_start_test;else start_test;fi # WA for MAC
-checkbusy="$(tail -2 $iperf3log | grep SUCCESS | wc -l)"
+checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS | wc -l)"
 
 # Anti fail
 busyfail=$(( $busyfail + 1 ))
@@ -256,9 +260,9 @@ if [ $upstream = true ]; then
 	if [ $STA_TYPE = mac ];then 
 # Macs have different scripts depending on direction so..
 IPERF3_SCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client-logstash.sh"
-mac_start_test;failcheck;ap_script
+mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then
-start_test '-u';failcheck;ap_script
+start_test '-u';failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
 else echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1
 	fi
@@ -268,9 +272,9 @@ if [ $downstream = true ]; then
 	if [ $STA_TYPE = mac ];then
 # Macs have different scripts depending on direction so..
 IPERF3_SCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client_reversed-logstash.sh"
-mac_start_test;failcheck;ap_script
+mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then 
-start_test '-d';failcheck;ap_script
+start_test '-d';failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
 else echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1
 	fi

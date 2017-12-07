@@ -61,9 +61,13 @@ stamac_clean=`printf $mac | tr -d ':'`
 #wl -i $radio sta_info $mac | egrep 'frame:' | tr -d 'per|antenna|rssi|of|last|rx|data|frame|:|average|noise|floor|frames' | xargs | syslog_parse asdf
 #wl -i $radio sta_info $mac | egrep 'noise' | tr -d 'per|antenna|rssi|of|last|rx|data|frame|:|average|noise|floor|frames' | xargs | syslog_parse asdf
 
+		secs=10;endTime=$(( $(date +%s) + secs ))
+		while [ $(date +%s) -lt $endTime ]; do
 wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'tx' | tr -d 'rate||of|last|tx|pkt|:|kbps|-' | xargs | awk '{print $1}' | syslog_parse 389ac_txphyrate $radio [$stamac_clean]
 
 wl -i $radio sta_info $mac | egrep 'pkt:' | grep 'rx' | tr -d 'rate|of|last|rx|:kbps' | xargs | syslog_parse 389ac_rxphyrate $radio [$stamac_clean]
+		sleep 1
+		done
 	sleep 1
 	done
 done
