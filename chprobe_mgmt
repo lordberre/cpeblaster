@@ -55,6 +55,9 @@ $GREEN    -r) Reboot probes (requires sudo) $GREEN
     -f) Fetch commit logs from probes (last 5 lines) $RED
 $NORMAL##### TESTS $RED
 $GREEN    -b) Run a BBK test and fetch results $RED
+$GREEN    -a) Number of probes to run test on (aggregated iperf3 test) $RED
+$GREEN    -j) Provide probes as arg, e.g: "chprobe01,chprobe02,chprobe03" (iperf3 aggregated test) $RED
+$GREEN    -m) Provide the direction, must be "downstream" or "upstream" (iperf3 aggregated test) $RED
     -b) Run a iperf3 TCP test and fetch results $RED
     -i) Send PING echos to target via probe $RED
 $NORMAL##### WIFI $RED
@@ -178,7 +181,7 @@ logfacility_iperf3=local3.debug
 
 agg_presentation () {
 if [ $agg_debug = "false" ];then
-egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$iperf3_direction /" | logger -t iperf3tcp[$(echo $count)] -p $logfacility_iperf3
+egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$probevar ${iperf3_direction} /" | logger -t iperf3tcp_agg[$(echo $count)] -p $logfacility_iperf3
 elif [ $agg_debug = "true" ];then echo 'Parsing disabled. Use journal or tail the log file'
 fi
 }
@@ -205,18 +208,43 @@ ansible_iperf3 () {
 if [ $agg_probes -eq 2 ]; then
 check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
 check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation &
-echo "Test for $probe_arg and $AGG_SERVER1 started: $(pgrep -fa $probe_arg)"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2" | agg_presentation &
-echo "Test for $probe_arg2 and $AGG_SERVER2 started: $(pgrep -fa $probe_arg2)"
+probevar=$probe_arg;result1=`ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation` &
+pid_agg1=$!
+echo "Test for $probe_arg and $AGG_SERVER1 started..."
+probevar=$probe_arg2;result2=`ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2" | agg_presentation` &
+pid_agg2=$!
+echo "Test for $probe_arg2 and $AGG_SERVER2 started..."
+while [ `ps aux | grep -c $pid_agg1` -eq 2 ] || [ `ps aux | grep -c $pid_agg2` -eq 2 ];do sleep 1
+done
+echo "Tests for $probe_array finished"
+#expr $result1 + $result2
 
 elif [ $agg_probes -eq 3 ]; then
 check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
 check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
 check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
-ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
+
+# Kill currently running iperf3 or bbk tests
+echo "Killing all current tests to avoid interference on ${probes}..."
+for probes in {$probe_arg,$probe_arg2,$probe_arg3};do
+ansible $ansible_debug $probes -m systemd -a "name=crond state=stopped" -b &> $REDIRECT
+ansible $ansible_debug $probes -m shell -a "kill -9 $(pgrep -f 'iperf3 -c|tcp_iperf3|bbk')" &> $REDIRECT
+done
+echo "Done killing all tests..."
+probevar=$probe_arg;result1=`ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation` &
+pid_agg1=$!
+echo "Test for $probe_arg and $AGG_SERVER1 started..."
+probevar=$probe_arg2;result2=`ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2" | agg_presentation` &
+pid_agg2=$!
+echo "Test for $probe_arg2 and $AGG_SERVER2 started..."
+probevar=$probe_arg3;result3=`ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3" | agg_presentation` &
+pid_agg3=$!
+echo "Test for $probe_arg3 and $AGG_SERVER3 started..."
+while [ `ps aux | grep -c $pid_agg1` -eq 2 ] || [ `ps aux | grep -c $pid_agg2` -eq 2 ] || [ `ps aux | grep -c $pid_agg3` -eq 2 ];do sleep 1
+done
+ansible $ansible_debug $probes -m systemd -a "name=crond state=started" -b &> $REDIRECT
+echo "Tests for $probe_array finished"
+#expr $result1 + $result2
 
 elif [ $agg_probes -eq 4 ]; then
 check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
