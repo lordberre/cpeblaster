@@ -1,5 +1,7 @@
 #!/bin/bash
-# Version 1.1
+# Version 1.2
+# Known issues:
+# Aggregated iperf3 tests does support the busyloop, e.g when server is busy the test will fail.
 
 # Vars
 probe=false
@@ -133,7 +135,7 @@ fi
 
 ## Restart NetworkManager
 if [ $chprobe_restartnetwork = "true" ]; then
-ansible $ansible_debug $probe -m systemd -a "name=NetworkManager state=restarted" -b -K
+ansible $ansible_debug $probe -m systemd -a "name=NetworkManager state=restarted" -b
 fi
 
 ## BBK
@@ -174,6 +176,11 @@ probe_arg2="${array[1]}"
 probe_arg3="${array[2]}"
 probe_arg4="${array[3]}"
 
+agg_play () {
+echo 'Checking dependencies and pausing all tests in the probes'
+ansible-playbook $PLAYDIR/agg_test -e "probe_array=$probe_array wait_time=60"
+}
+
 # Vars
 count=$(( ( RANDOM % 9999 )  + 1 ))
 iperf3log="/home/jump/.chprobe/logs/iperf3_agg.log"
@@ -190,8 +197,9 @@ check_aggservers () {
 # Make sure all servers are available
 iperf3_busystatus=`iperf3 -c $1 -t 1 | grep busy`
 declare -i iperf3_busyint=`printf "$iperf3_busystatus" | wc -l`
-printf "$iperf3_busystatus" >> $iperf3log
-if [ $iperf3_busyint -eq 1 ]; then server_available=false
+if [ $iperf3_busyint -ge 1 ]; then
+echo "$count - $iperf3_busystatus" >> $iperf3log
+server_available=false
 else server_available=true
 fi
 }
@@ -206,8 +214,12 @@ AGG_SERVER6="iperf.comhem.com -p 5205"
 
 ansible_iperf3 () {
 if [ $agg_probes -eq 2 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
+echo "$AGG_SERVER1 is available? $server_available"
+echo "$AGG_SERVER2 is available? $server_available"
+
+# Kill currently running iperf3 or bbk tests
+agg_play & &> $REDIRECT && sleep 2
+echo "Preparations are finished..."
 probevar=$probe_arg;result1=`ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation` &
 pid_agg1=$!
 echo "Test for $probe_arg and $AGG_SERVER1 started..."
@@ -216,21 +228,18 @@ pid_agg2=$!
 echo "Test for $probe_arg2 and $AGG_SERVER2 started..."
 while [ `ps aux | grep -c $pid_agg1` -eq 2 ] || [ `ps aux | grep -c $pid_agg2` -eq 2 ];do sleep 1
 done
+# ansible $ansible_debug $probes -m systemd -a "name=crond state=started" -b &> $REDIRECT # agg_play
 echo "Tests for $probe_array finished"
-#expr $result1 + $result2
 
 elif [ $agg_probes -eq 3 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
+
+echo "$AGG_SERVER1 is available? $server_available"
+echo "$AGG_SERVER2 is available? $server_available"
+echo "$AGG_SERVER3 is available? $server_available"
 
 # Kill currently running iperf3 or bbk tests
-echo "Killing all current tests to avoid interference on ${probes}..."
-for probes in {$probe_arg,$probe_arg2,$probe_arg3};do
-ansible $ansible_debug $probes -m systemd -a "name=crond state=stopped" -b &> $REDIRECT
-ansible $ansible_debug $probes -m shell -a "kill -9 $(pgrep -f 'iperf3 -c|tcp_iperf3|bbk')" &> $REDIRECT
-done
-echo "Done killing all tests..."
+agg_play & &> $REDIRECT && sleep 2
+echo "Preparations are finished..."
 probevar=$probe_arg;result1=`ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation` &
 pid_agg1=$!
 echo "Test for $probe_arg and $AGG_SERVER1 started..."
@@ -242,7 +251,7 @@ pid_agg3=$!
 echo "Test for $probe_arg3 and $AGG_SERVER3 started..."
 while [ `ps aux | grep -c $pid_agg1` -eq 2 ] || [ `ps aux | grep -c $pid_agg2` -eq 2 ] || [ `ps aux | grep -c $pid_agg3` -eq 2 ];do sleep 1
 done
-ansible $ansible_debug $probes -m systemd -a "name=crond state=started" -b &> $REDIRECT
+# ansible $ansible_debug $probes -m systemd -a "name=crond state=started" -b &> $REDIRECT # agg_play
 echo "Tests for $probe_array finished"
 #expr $result1 + $result2
 
@@ -262,11 +271,14 @@ fi
 
 busy_loop () {
 # Busy loop
-checkbusy="$(tail -1 $iperf3log | grep $count | grep busy | wc -l)"
+checkbusy="$(tail -10 $iperf3log | grep $count | grep busy | wc -l)"
 busyfail=0
-while [ $checkbusy -eq 1 ]; do
+while [ $checkbusy -ge 1 ]; do
 echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info &&
 sleep $[ ( $RANDOM % 5 ) + 11]s &&
+check_aggservers $AGG_SERVER1
+check_aggservers $AGG_SERVER2
+check_aggservers $AGG_SERVER3
 
 # Anti fail
 busyfail=$(( $busyfail + 1 ))
@@ -281,7 +293,7 @@ check_probe=$(ansible $probe_array -m ping | grep -i unreach | wc -l) &> /dev/nu
 	if [ $check_probe -ge 1 ]; then echo "One or more probes are unreachable, aborting" && exit 1
 	else
 	echo 'Probes are reachable, continuing'
-	busy_loop;ansible_iperf3
+	busy_loop;ansible_iperf3 && exit 0
 	fi
 fi
 
