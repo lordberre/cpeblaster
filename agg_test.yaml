@@ -1,0 +1,23 @@
+---
+- hosts: "{{ probe_array }}"
+  gather_facts: false
+  become: true
+  remote_user: chprobe
+  tasks:
+
+  - name: Kill throughput tests
+    shell: "kill $(pgrep -f 'iperf3|bbk')"
+    ignore_errors: yes
+
+  - name: Pause cron daemon for a bit
+    systemd:
+         name: crond
+         state: stopped
+
+  - name: Wait for 
+    wait_for: timeout="{{ wait_time }}"
+
+  - name: start cron daemon
+    systemd:
+         name: crond
+         state: started
