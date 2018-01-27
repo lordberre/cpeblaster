@@ -15,6 +15,11 @@ chprobe_ansibleping=false
 chprobe_restartnetwork=false
 chprobe_fetchcommits=false
 iperf3_direction=false
+chprobe_wifi=false
+chprobe_ssid=false
+chprobe_wpakey=false
+MAC=false
+
 REDIRECT="/dev/null"
 PLAYDIR="/etc/chprobe/plays"
 
@@ -63,6 +68,10 @@ $GREEN    -m) Provide the direction, must be "downstream" or "upstream" (iperf3 
     -b) Run a iperf3 TCP test and fetch results $RED
     -i) Send PING echos to target via probe $RED
 $NORMAL##### WIFI $RED
+    -wl-probe) Targeted wifiprobe (mandatory for all Wi-Fi parameters) $RED
+    -wl-ssid) Configure SSID on probe (mandatory if WPA KEY is configured) $RED
+    -wl-key) Configure WPA KEY on probe $RED
+    -wl-mac) Configure STA MAC on probe (mandatory if SSID is configured) $RED
     -wl) Set WiFi label to append on iperf3 tests $RED
     -w24g) Attempt to move probe to 2.4Ghz $RED 
     -w5g) Attempt to move probe to 5Ghz $RED
@@ -96,6 +105,10 @@ do
         j  ) probe_array=${OPTARG}       ;;
         m  ) iperf3_direction=${OPTARG}       ;;
         r  ) probe_reboot=true;probe=${OPTARG}       ;;
+	wl-probe  ) chprobe_wifi=true;probe=${OPTARG} ;;
+	wl-ssid  ) chprobe_ssid=true;SSID=${OPTARG} ;;
+        wl-key  ) chprobe_wpakey=true;WPA_KEY=${OPTARG} ;;
+        wl-mac  ) chprobe_mac=true;MAC=${OPTARG} ;;
         h  ) usage; exit;;
 	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
         \? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
@@ -310,6 +323,49 @@ check_probe=$(ansible $probe -m ping | grep -i unreach | wc -l) &> /dev/null
 if [ $check_probe -le 0 ]; then echo "Seems like the probe didn't reboot right away.. There might be jobs shutting down still, give it a few min"
 else
 echo 'Probe seems dead, all good :)'
+fi
+
+# Wi-Fi functions
+# Generates a NM configuration file for a wifiprobe
+if [ $chprobe_wifi = true ] && [ $probe != false ] && [ $MAC != false ]; then
+
+nm_param () {
+NM_DIR=/etc/sysconfig/network-scripts/$1-$SSID
+}
+
+if [ chprobe_ssid = true ]; then nm_param ifcfg
+UUID=`uuidgen`
+WIFI_PROFILE="HWADDR=$MAC
+ESSID="$SSID"
+MODE=Managed
+KEY_MGMT=WPA-PSK
+MAC_ADDRESS_RANDOMIZATION=default
+TYPE=Wireless
+BOOTPROTO=dhcp
+DEFROUTE=yes
+IPV4_FAILURE_FATAL=no
+IPV6INIT=yes
+IPV6_AUTOCONF=yes
+IPV6_DEFROUTE=yes
+IPV6_FAILURE_FATAL=no
+IPV6_ADDR_GEN_MODE=stable-privacy
+NAME=$SSID
+UUID=$UUID
+ONBOOT=yes
+SECURITYMODE=open
+PEERDNS=yes
+PEERROUTES=yes
+IPV6_PEERDNS=yes
+IPV6_PEERROUTES=yes"
+fi
+
+if [ chprobe_wpakey = true ] && [ $chprobe_ssid = true ] && [ $MAC != false ]; then nm_param keys
+echo "WPA_PSK=\'$WPA_KEY\'" > $NM_DIR
+fi
+
+# Save data in NM directory
+echo "$WIFI_PROFILE" > $NM_DIR && echo 'Successfully configured Wi-Fi profile, now use "-g" arg to reinit Wi-Fi'
+else echo 'Probe,SSID and STA MAC must always be specified' && exit 1
 fi
         ;;
     *)
