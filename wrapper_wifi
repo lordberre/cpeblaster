@@ -193,7 +193,7 @@ ap_script () {
 if [ $ap_checking = true ];then
 count="$(( ( RANDOM % 9999 )  + 100 ))"
 	if [ $iperf3_check -ge 1 ];then # Check if iperf3 server is busy and continue if so
-	screen -S $CONSOLE -X stuff "/var/./phy.sh $HOSTNAME $AP_RADIO $STA_MAC $LABEL1 $LABEL2 $count \n"
+	screen -S $CONSOLE -X stuff "/data/./phy.sh $HOSTNAME $AP_RADIO $STA_MAC $LABEL1 $LABEL2 $count \n"
 #	sleep 1
 #	tail -300 $SCREENLOGFILE | grep $count >> $REDIRECT # Need proper func, tail is not enough
 	else echo "server is busy so not running AP script.."
@@ -259,7 +259,7 @@ done
 if [ $upstream = true ]; then 
 	if [ $STA_TYPE = mac ];then 
 # Macs have different scripts depending on direction so..
-IPERF3_SCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client-logstash.sh"
+IPERF3_SCRIPT="~/Labb-stuff/probes/mac_tcp_iperf3_client-logstash.sh"
 mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then
 start_test '-u';failcheck;ap_script && rm -f $iperf3log
@@ -271,7 +271,7 @@ fi
 if [ $downstream = true ]; then
 	if [ $STA_TYPE = mac ];then
 # Macs have different scripts depending on direction so..
-IPERF3_SCRIPT="/Users/testlabbet-pro/Labb-stuff/probes/mac_tcp_iperf3_client_reversed-logstash.sh"
+IPERF3_SCRIPT="~/Labb-stuff/probes/mac_tcp_iperf3_client_reversed-logstash.sh"
 mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then 
 start_test '-d';failcheck;ap_script && rm -f $iperf3log
