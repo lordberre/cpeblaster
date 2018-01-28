@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 1.2
+# Version 1.4
 # Known issues:
 # Aggregated iperf3 tests does support the busyloop, e.g when server is busy the test will fail.
 
@@ -19,7 +19,7 @@ chprobe_wifi=false
 chprobe_ssid=false
 chprobe_wpakey=false
 MAC=false
-
+agg_test=false
 REDIRECT="/dev/null"
 PLAYDIR="/etc/chprobe/plays"
 
@@ -68,10 +68,10 @@ $GREEN    -m) Provide the direction, must be "downstream" or "upstream" (iperf3 
     -b) Run a iperf3 TCP test and fetch results $RED
     -i) Send PING echos to target via probe $RED
 $NORMAL##### WIFI $RED
-    -wl-probe) Targeted wifiprobe (mandatory for all Wi-Fi parameters) $RED
-    -wl-ssid) Configure SSID on probe (mandatory if WPA KEY is configured) $RED
-    -wl-key) Configure WPA KEY on probe $RED
-    -wl-mac) Configure STA MAC on probe (mandatory if SSID is configured) $RED
+    -x) Targeted wifiprobe (mandatory for all Wi-Fi parameters) $RED
+    -u) Configure "SSID" (double quotes) on probe (mandatory if WPA KEY is configured) $RED
+    -l) Configure WPA KEY on probe $RED
+    -q) Configure STA MAC on probe (mandatory if SSID is configured) $RED
     -wl) Set WiFi label to append on iperf3 tests $RED
     -w24g) Attempt to move probe to 2.4Ghz $RED 
     -w5g) Attempt to move probe to 5Ghz $RED
@@ -87,7 +87,7 @@ $NORMAL Only arguments in $GREEN GREEN $NORMAL are working currently.
 USAGE
  }
 
-options=':z:b:r:c:t:d:p:g:f:i:a:j:m:hv'
+options=':z:b:r:c:t:d:p:g:f:i:a:j:m:x:u:l:q:hv'
 
 while getopts $options option
 do
@@ -105,10 +105,10 @@ do
         j  ) probe_array=${OPTARG}       ;;
         m  ) iperf3_direction=${OPTARG}       ;;
         r  ) probe_reboot=true;probe=${OPTARG}       ;;
-	wl-probe  ) chprobe_wifi=true;probe=${OPTARG} ;;
-	wl-ssid  ) chprobe_ssid=true;SSID=${OPTARG} ;;
-        wl-key  ) chprobe_wpakey=true;WPA_KEY=${OPTARG} ;;
-        wl-mac  ) chprobe_mac=true;MAC=${OPTARG} ;;
+	x  ) chprobe_wifi=true;probe=${OPTARG} ;;
+	u  ) chprobe_ssid=true;SSID=${OPTARG} ;;
+	l  ) chprobe_wpakey=true;WPA_KEY=${OPTARG} ;;
+	q  ) chprobe_mac=true;MAC=${OPTARG} ;;
         h  ) usage; exit;;
 	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
         \? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
@@ -269,14 +269,31 @@ echo "Tests for $probe_array finished"
 #expr $result1 + $result2
 
 elif [ $agg_probes -eq 4 ]; then
-check_aggservers $AGG_SERVER1 && echo "$AGG_SERVER1 is available? $server_available"
-check_aggservers $AGG_SERVER2 && echo "$AGG_SERVER2 is available? $server_available"
-check_aggservers $AGG_SERVER3 && echo "$AGG_SERVER3 is available? $server_available"
-check_aggservers $AGG_SERVER4 && echo "$AGG_SERVER4 is available? $server_available"
-ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1"
-ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2"
-ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3"
-ansible $ansible_debug $probe_arg4 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER4"
+echo "$AGG_SERVER1 is available? $server_available"
+echo "$AGG_SERVER2 is available? $server_available"
+echo "$AGG_SERVER3 is available? $server_available"
+echo "$AGG_SERVER4 is available? $server_available"
+
+# Kill currently running iperf3 or bbk tests
+agg_play & &> $REDIRECT && sleep 2
+echo "Preparations are finished..."
+probevar=$probe_arg;result1=`ansible $ansible_debug $probe_arg -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER1" | agg_presentation` &
+pid_agg1=$!
+echo "Test for $probe_arg and $AGG_SERVER1 started..."
+probevar=$probe_arg2;result2=`ansible $ansible_debug $probe_arg2 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER2" | agg_presentation` &
+pid_agg2=$!
+echo "Test for $probe_arg2 and $AGG_SERVER2 started..."
+probevar=$probe_arg3;result3=`ansible $ansible_debug $probe_arg3 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER3" | agg_presentation` &
+pid_agg3=$!
+echo "Test for $probe_arg3 and $AGG_SERVER3 started..."
+probevar=$probe_arg4;result4=`ansible $ansible_debug $probe_arg4 -m shell -a "iperf3 -t $IPERF_DURATION -P $IPERF_SESSIONS $IPERF_DIRECTION -c $AGG_SERVER4" | agg_presentation` &
+pid_agg4=$!
+echo "Test for $probe_arg4 and $AGG_SERVER4 started..."
+while [ `ps aux | grep -c $pid_agg1` -eq 2 ] || [ `ps aux | grep -c $pid_agg2` -eq 2 ] || [ `ps aux | grep -c $pid_agg3` -eq 2 ] || [ `ps aux | grep -c $pid_agg4` -eq 2 ];do sleep 1
+done
+# ansible $ansible_debug $probes -m systemd -a "name=crond state=started" -b &> $REDIRECT # agg_play
+echo "Tests for $probe_array finished"
+#expr $result1 + $result2
 
 else echo "$agg_probes is outside of the supported range (2-4), aborting" && exit 1
 fi
@@ -314,7 +331,7 @@ fi
 if [ $probe_reboot = "true" ]; then
 read -r -p "Are you sure you want to reboot the probe? [y/N] " response
 case "$response" in
-    [yY][eE][sS]|[yY]) 
+    [yY][eE][sS]|[yY])
         echo "Rebooting ${probe01}..."; adhoc_shell_sudo $probe 'reboot' &> $REDIRECT
 
 # Check if we can ping probe
@@ -324,54 +341,42 @@ if [ $check_probe -le 0 ]; then echo "Seems like the probe didn't reboot right a
 else
 echo 'Probe seems dead, all good :)'
 fi
-
-# Wi-Fi functions
-# Generates a NM configuration file for a wifiprobe
-if [ $chprobe_wifi = true ] && [ $probe != false ] && [ $MAC != false ]; then
-
-nm_param () {
-NM_DIR=/etc/sysconfig/network-scripts/$1-$SSID
-}
-
-if [ chprobe_ssid = true ]; then nm_param ifcfg
-UUID=`uuidgen`
-WIFI_PROFILE="HWADDR=$MAC
-ESSID="$SSID"
-MODE=Managed
-KEY_MGMT=WPA-PSK
-MAC_ADDRESS_RANDOMIZATION=default
-TYPE=Wireless
-BOOTPROTO=dhcp
-DEFROUTE=yes
-IPV4_FAILURE_FATAL=no
-IPV6INIT=yes
-IPV6_AUTOCONF=yes
-IPV6_DEFROUTE=yes
-IPV6_FAILURE_FATAL=no
-IPV6_ADDR_GEN_MODE=stable-privacy
-NAME=$SSID
-UUID=$UUID
-ONBOOT=yes
-SECURITYMODE=open
-PEERDNS=yes
-PEERROUTES=yes
-IPV6_PEERDNS=yes
-IPV6_PEERROUTES=yes"
-fi
-
-if [ chprobe_wpakey = true ] && [ $chprobe_ssid = true ] && [ $MAC != false ]; then nm_param keys
-echo "WPA_PSK=\'$WPA_KEY\'" > $NM_DIR
-fi
-
-# Save data in NM directory
-echo "$WIFI_PROFILE" > $NM_DIR && echo 'Successfully configured Wi-Fi profile, now use "-g" arg to reinit Wi-Fi'
-else echo 'Probe,SSID and STA MAC must always be specified' && exit 1
-fi
         ;;
     *)
         exit 0
         ;;
 esac
+fi
+
+# Wi-Fi functions
+# Generates a NM configuration file for a wifiprobe
+if [ $chprobe_wifi = "true" ] && [ $probe != "false" ] && [ $MAC != "false" ]; then
+WIFI_KEY="WPA_PSK=''" # Just set PSK to '' if it's not specified
+
+# Configure the Path for NM dirs here
+PROFILE_IN="/etc/sysconfig/network-scripts/ifcfg-$SSID"
+PSK_IN="/etc/sysconfig/network-scripts/keys-$SSID"
+# Remove spaces
+PROFILE_DIR=`echo ${PROFILE_IN// /_}`
+PSK_DIR=`echo ${PSK_IN// /_}`
+
+if [ $chprobe_ssid = "true" ]; then
+UUID=`uuidgen`
+fi
+
+if [ $chprobe_wpakey = "true" ] && [ $chprobe_ssid = "true" ] && [ $MAC != "false" ]; then
+WIFI_KEY="WPA_PSK='$WPA_KEY'" 
+#echo $WIFI_KEY > $NM_DIR
+#ansible $ansible_debug $probe -m copy -a "content="$WIFI_KEY" dest=$NM_DIR force=yes" -b -K
+ansible-playbook $ansible_debug --limit $probe $PLAYDIR/wificonfig -e "UUID=$UUID SSID='$SSID' PROFILE_DIR=$PROFILE_DIR PSK_DIR=$PSK_DIR WIFI_KEY=$WIFI_KEY MAC=$MAC" -b -K
+fi
+
+# Save data in NM directory
+#echo "$WIFI_PROFILE" > $NM_DIR
+#ansible $ansible_debug $probe -m copy -a "content="$WIFI_PROFILE" dest=$NM_DIR force=yes" -b
+
+echo 'Successfully configured Wi-Fi profile, now use "-g" arg to reinit Wi-Fi'
+else echo 'Probe,SSID and STA MAC must always be specified' && exit 1
 fi
 
 else
