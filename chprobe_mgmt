@@ -18,6 +18,7 @@ iperf3_direction=false
 chprobe_wifi=false
 chprobe_ssid=false
 chprobe_wpakey=false
+chprobe_wificfg=false
 MAC=false
 agg_test=false
 REDIRECT="/dev/null"
@@ -72,6 +73,7 @@ $NORMAL##### WIFI $RED
     -u) Configure "SSID" (double quotes) on probe (mandatory if WPA KEY is configured) $RED
     -l) Configure WPA KEY on probe $RED
     -q) Configure STA MAC on probe (mandatory if SSID is configured) $RED
+    -k) Remove all configured WiFi networks on the probe (Caution!) $RED
     -wl) Set WiFi label to append on iperf3 tests $RED
     -w24g) Attempt to move probe to 2.4Ghz $RED 
     -w5g) Attempt to move probe to 5Ghz $RED
@@ -87,7 +89,7 @@ $NORMAL Only arguments in $GREEN GREEN $NORMAL are working currently.
 USAGE
  }
 
-options=':z:b:r:c:t:d:p:g:f:i:a:j:m:x:u:l:q:hv'
+options=':z:b:r:c:t:d:p:g:f:i:a:j:m:x:u:l:q:k:hv'
 
 while getopts $options option
 do
@@ -109,6 +111,7 @@ do
 	u  ) chprobe_ssid=true;SSID=${OPTARG} ;;
 	l  ) chprobe_wpakey=true;WPA_KEY=${OPTARG} ;;
 	q  ) chprobe_mac=true;MAC=${OPTARG} ;;
+        k  ) chprobe_wificfg=true;probe=${OPTARG} ;;
         h  ) usage; exit;;
 	v  ) REDIRECT="/dev/stdout";ansible_debug="-vvv" ;;
         \? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
@@ -148,7 +151,7 @@ fi
 
 ## Restart NetworkManager
 if [ $chprobe_restartnetwork = "true" ]; then
-ansible $ansible_debug $probe -m systemd -a "name=NetworkManager state=restarted" -b
+ansible $ansible_debug $probe -m systemd -a "name=NetworkManager state=restarted" -b -K
 fi
 
 ## BBK
@@ -350,12 +353,12 @@ fi
 
 # Wi-Fi functions
 # Generates a NM configuration file for a wifiprobe
-if [ $chprobe_wifi = "true" ] && [ $probe != "false" ] && [ $MAC != "false" ]; then
+if [ $chprobe_wifi = "true" ]; then
 WIFI_KEY="WPA_PSK=''" # Just set PSK to '' if it's not specified
 
 # Configure the Path for NM dirs here
-PROFILE_IN="/etc/sysconfig/network-scripts/ifcfg-$SSID"
-PSK_IN="/etc/sysconfig/network-scripts/keys-$SSID"
+PROFILE_IN="/etc/sysconfig/network-scripts/ifcfg-Auto_$SSID"
+PSK_IN="/etc/sysconfig/network-scripts/keys-Auto_$SSID"
 # Remove spaces
 PROFILE_DIR=`echo ${PROFILE_IN// /_}`
 PSK_DIR=`echo ${PSK_IN// /_}`
@@ -376,7 +379,12 @@ fi
 #ansible $ansible_debug $probe -m copy -a "content="$WIFI_PROFILE" dest=$NM_DIR force=yes" -b
 
 echo 'Successfully configured Wi-Fi profile, now use "-g" arg to reinit Wi-Fi'
-else echo 'Probe,SSID and STA MAC must always be specified' && exit 1
+elif [ $chprobe_ssid = "true" ] && [ $MAC = "false" ]; then echo 'Probe,SSID and STA MAC must always be specified' && exit 1
+fi
+
+if [ $chprobe_wificfg = "true" ]; then
+ansible $ansible_debug $probe -m shell -a 'rm -Rf /etc/sysconfig/network-scripts/ifcfg-Auto_* /etc/sysconfig/network-scripts/keys-Auto_*' -b -K
+#ansible $ansible_debug $probe -m file -a 'state=absent path=/etc/sysconfig/network-scripts/test/ifcfg-* path=/etc/sysconfig/network-scripts/test/keys-*' -b -K
 fi
 
 else
