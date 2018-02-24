@@ -1,0 +1,15 @@
+---
+- hosts: chprobes
+  remote_user: chprobe
+  tasks:
+  - name: Copy WiFi profile to probe
+    template: src="/etc/chprobe/plays/templates/wifi_profile" dest="{{ PROFILE_DIR }}"
+- hosts: chprobes
+  #remote_user: chprobe
+  connection: local
+  gather_facts: false
+  tasks:
+  - name: Copy PSK
+    copy: content="{{ WIFI_KEY }}" dest="{{ PSK_DIR }}"
+    run_once: True
+
