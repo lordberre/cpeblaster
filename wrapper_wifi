@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 0.3
+# Version 0.4
 
 # Enable or disable AP checking
 ap_checking=true
@@ -17,6 +17,11 @@ iperf3log="/var/log/iperf3_wrapper.log"
 IPERF3_SCRIPT="/home/chprobe/tcp_iperf3_clientv3.sh"
 SCREENLOGFILE="/home/lordberre-server/screens/usb0/sagem-rev3/screenlog.0"
 REDIRECT="/var/log/apdata.txt" # Output file (both Broadcom and Celeno)
+TEST_LENGTH=40
+
+# Paths for console output / log transfer (Broadcom AP)
+brcm_logpath1=/home/lordberre-server/screens/usb0/3890v3/screenlog.0
+brcm_logpath2=$REDIRECT
 
 # Assign all vars
 AP_TYPE=false
@@ -188,6 +193,25 @@ if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wl1 # Only works with 4x4 AP
 elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wl0 # Not implemented in local script
 fi
 
+# Function for transfering logs from the console output
+logtransfer () {
+string=3384_
+
+tail -n0 -F $brcm_logpath1 | \
+while read LINE
+do
+  if echo "$LINE" | grep "$string" 1>/dev/null 2>&1
+  then
+    echo "$LINE" >> $brcm_logpath2
+  fi
+done
+}
+
+# Kill overlapping jobs
+if [ `pgrep -fac $brcm_logpath1` -ge 1 ]; then 
+ kill $(pgrep -fa $brcm_logpath1 | awk {'print $1'})
+else logtransfer &
+fi
 
 ap_script () {
 if [ $ap_checking = true ];then
@@ -196,7 +220,7 @@ count="$(( ( RANDOM % 9999 )  + 100 ))"
 	screen -S $CONSOLE -X stuff "/data/./phy.sh $HOSTNAME $AP_RADIO $STA_MAC $LABEL1 $LABEL2 $count \n"
 #	sleep 1
 #	tail -300 $SCREENLOGFILE | grep $count >> $REDIRECT # Need proper func, tail is not enough
-	else echo "server is busy so not running AP script.."
+	else echo "server is not busy so not running AP script.."
 	fi
 else echo 'ap checking disabled.'
 fi
@@ -216,7 +240,9 @@ printf "$ansible_status" >> $iperf3log
 start_test () {
         if [ $ansible_check -ge 1 ] && [ $iperf3_check -le 0 ];then
 sleep 1
-ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 -f $IPERFSERVER &" >> $iperf3log &
+# Use -f arg to force iperf3 server instead of using config file
+#ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 -f $IPERFSERVER &" >> $iperf3log &
+ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 &" >> $iperf3log &
 sleep 1; init_vars
 # ap_script
 else echo "Aborting because target is either unreachable ($ansible_check) or the iperf3 server is busy ($iperf3_check)" && exit 1
@@ -228,7 +254,7 @@ mac_start_test () {
 sleep 1
 # Pipe to sleep because for some reason with some GWs, the whole iperf3 session is teared down when ansible is finished
 # Even though the script is completely daemonized with nohup/&
-ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT $IPERFSERVER | sleep 40" >> $iperf3log &
+ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT $IPERFSERVER | sleep $TEST_LENGTH" >> $iperf3log &
 sleep 2; init_vars
 # ap_script
 else echo "Aborting because target is either unreachable ($ansible_check) or the iperf3 server is busy ($iperf3_check)" && exit 1
@@ -278,4 +304,11 @@ start_test '-d';failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
 else echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1
 	fi
+fi
+
+# Kill overlapping logtransfer jobs (if broadcom_ap)
+if [ $AP_TYPE = "broadcom" ]; then
+ if [ `pgrep -fac $brcm_logpath1` -ge 1 ]; then
+ sleep $[ $TEST_LENGTH - 1 ] && kill $(pgrep -fa $brcm_logpath1 | awk {'print $1'})
+ fi
 fi
