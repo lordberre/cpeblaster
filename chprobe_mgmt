@@ -69,11 +69,11 @@ $GREEN    -m) Provide the direction, must be "downstream" or "upstream" (iperf3 
     -b) Run a iperf3 TCP test and fetch results $RED
     -i) Send PING echos to target via probe $RED
 $NORMAL##### WIFI $RED
-    -x) Targeted wifiprobe (mandatory for all Wi-Fi parameters) $RED
-    -u) Configure "SSID" (double quotes) on probe (mandatory if WPA KEY is configured) $RED
-    -l) Configure WPA KEY on probe $RED
-    -q) Configure STA MAC on probe (mandatory if SSID is configured) $RED
-    -k) Remove all configured WiFi networks on the probe (Caution!) $RED
+$GREEN    -x) Targeted wifiprobe (mandatory for all Wi-Fi parameters) $RED
+$GREEN    -u) Configure "SSID" (double quotes) on probe (mandatory if WPA KEY is configured) $RED
+$GREEN    -l) Configure WPA KEY on probe $RED
+$GREEN    -q) Configure STA MAC on probe (mandatory if SSID is configured) $RED
+$GREEN    -k) Remove all configured WiFi networks on the probe (Caution!) $RED
     -wl) Set WiFi label to append on iperf3 tests $RED
     -w24g) Attempt to move probe to 2.4Ghz $RED 
     -w5g) Attempt to move probe to 5Ghz $RED
