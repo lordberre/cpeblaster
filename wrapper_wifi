@@ -1,9 +1,9 @@
 #!/bin/bash
-# Version 0.4
+# Version 0.5
 
 # Enable or disable AP checking
 ap_checking=true
-
+server_unreachable=true # Use "true" if server is unreahable for host running wrapper script
 # Broadcom AP
 # In order to use this, the phy.sh script need to be in /var/ of the AP device and the screen session must be up to the eRouter
 
@@ -33,8 +33,16 @@ CONSOLE=false
 IPERFSERVER=false
 TARGET=false
 downstream=false;upstream=false
+remote_test=false
 LABEL1=label1
 LABEL2=label2
+
+
+# remote iperf3 vars
+logtag=iperf3tcp
+declare -i chprobe_iperf3tcp_sessions=15
+declare -i chprobe_iperf3tcp_duration=40
+declare -i chprobe_iperf3tcp_omitduration=10
 
 usage () {
 cat <<USAGE
@@ -42,13 +50,14 @@ How to use: $0 -4 or -6 must be specified.
     -d) Measure downstream to STA (mandatory)
     -u) Measure upstream from STA (mandatory)
     -p) Set iperf3 server IP (mandatory)
-    -a) Set ansible/STA target (mandatory)
+    -a) Set ansible/STA (mandatory)
     -t) Set AP type ("celeno" or "broadcom") (mandatory)
     -l) Set AP label (mandatory)
     -s) Set STA type ("mac", "linux" or "win") (mandatory)
     -m) Set STA Mac (format AA:BB:CC:DD:EE:FF) (mandatory)
     -r) Set AP radio ("5ghz" or "2.4ghz" or "bs" (bandsteering)) (mandatory)
     -c) Set console name (Broadcom AP only)
+    -f) Trigger a remote test rather (Sta is iperf3 server)
     -i) Set AP IP (celeno AP only)
     -y) Extra AP label 1
     -z) Extra AP label 2
@@ -58,7 +67,7 @@ How to use: $0 -4 or -6 must be specified.
 USAGE
  }
 
-options='t:l:i:m:r:c:p:a:s:y:z:udhv'
+options='t:l:i:m:r:c:p:a:s:y:z:fudhv'
 
 while getopts $options option
 do
@@ -77,13 +86,15 @@ do
         s  ) STA_TYPE=${OPTARG};;
         y  ) LABEL1=${OPTARG};; # Temp
         z  ) LABEL2=${OPTARG};; # Temp
+        f  ) remote_test=true; remote_friendlyname=${OPTARG};;
         ? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
         :  ) echo "Missing option argument for -$OPTARG" >&2; exit 1;;
         *  ) echo "Unimplemented option: -$OPTARG" >&2; exit 1;;
     esac
 done
 
-if [ $ap_checking = true ]; then
+if [ $remote_test = false ]; then
+if [ $ap_checking = true ];then
 	if [ $AP_TYPE = false ] || [ $AP_LABEL = false ] || [ $AP_RADIO = false ];then 
 echo "You forgot to use any of the following mandatory arguments:"
 echo "$(( set -o posix ; set ) | grep false)"
@@ -104,6 +115,7 @@ fi
 if [ $(pgrep -f 'celeno|3384_expect' | wc -l) -gt 8 ];then
 kill $(pgrep -f 'celeno|3384_expect ' | head -1) && echo Killed some leftover scripts..
 else echo "no leftover scripts detected (OK)"
+fi
 fi
 
 # Celeno AP
@@ -230,7 +242,10 @@ fi
 init_vars () {
 ansible_status="$(ansible $TARGET -m ping)"
 ansible_check="$(printf "$ansible_status" | grep SUCCESS | wc -l)"
+if [ $server_unreachable = false ];then
 iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 | grep busy | wc -l)"
+else iperf3_check=1
+fi
 }
 # Init ansible/iperf check and save the status for later use
 init_vars 
@@ -282,6 +297,76 @@ done
 #
 # Start doing stuff
 
+if [ $server_unreachable = true ];then
+iperf3_check=0
+fi
+
+# Remote test
+# This is for when the station is running the iperf3 server (good for dumb clients like Windows)
+if [ $remote_test = true ];then
+
+anti_overload () {
+while [ `pgrep -fc 'iperf3 --client'` -ge 30 ];do kill $(pgrep -f "iperf3 --client" | awk '{print $1}') && echo "[$logtag] We're overloaded with daemons, killing everything" | logger -p local5.err ; done
+}
+
+# Make sure that the test is performed and not "skipped" due to the server becoming busy after we exited the first busy loop
+busy_failcheck () {
+checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' | wc -l)"
+busyfail=0
+while [ $checkbusy -eq 1 ]; do
+echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info &&
+sleep $[ ( $RANDOM % 20 ) + 11]s &&
+iperf_daemon
+checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' | wc -l)"
+
+# Anti fail
+busyfail=$(( $busyfail + 1 ))
+if [ $busyfail -ge 20 ]; then
+echo "[$logtag] Giving up, since we didn't manage to access the server for over $busyfail retries. How can it be this busy?" | logger -p local5.err && break
+fi
+done
+}
+
+iperf3_parse () {
+egrep 'SUM.*receiver|SUM.*sender|busy' | awk '{print $6,$8}' | tr -d ':|receiver' | xargs | sed -e "s/^/$(date "+%b %d %H:%M:%S") $TARGET $logtag: /"
+}
+
+   if [ $upstream = true ]; then
+   iperf_daemon () {
+   iperf3 --client $IPERFSERVER -4 -R -P $chprobe_iperf3tcp_sessions -t $chprobe_iperf3tcp_duration -O $chprobe_iperf3tcp_omitduration | iperf3_parse
+   }
+   elif [ $downstream = true ]; then
+   iperf_daemon () {
+   iperf3 --client $IPERFSERVER -4 -P $chprobe_iperf3tcp_sessions -t $chprobe_iperf3tcp_duration -O $chprobe_iperf3tcp_omitduration | iperf3_parse
+   }
+   fi
+
+# Iperf daemon and condititions
+start_iperf3 () {
+anti_overload
+
+# We check the status of the iperf3 server and again if another test is running 
+case "$(pgrep -fc "iperf3 --client")" in
+
+0)  echo "[$logtag] Let's see if we can start the daemon" | logger -p info
+    serverbusy_loop
+    echo "[$logtag] Starting $logtag [debug: $localstatus | $(pgrep -fc 'iperf3 --client')]" | logger -p notice
+    iperf_daemon;busy_failcheck && echo "[$logtag] daemon finished" | logger -p info &&
+;;
+1)  echo "[$logtag] iperf daemon is already running" | logger -p info
+          while [ `pgrep -fc 'iperf3 --client'` -ge 1 ];do sleep $[ ( $RANDOM % $probetimer ) + 3]s && echo "[$logtag] waiting cuz either an iperf3 or a bbk daemon is running" | logger -p info;done
+            serverbusy_loop
+    echo "[$logtag] Starting $logtag [debug: $localstatus | $(pgrep -fc 'iperf3 --client')]" | logger -p notice
+    iperf_daemon;busy_failcheck && echo "[$logtag] daemon finished" | logger -p info
+;;
+*)  echo "[$logtag] multiple instances of iperf3 daemon running. Stopping & restarting iperf:" | logger -p info
+    kill $(pgrep -f "iperf3 --client" | awk '{print $1}')
+    ;;
+esac;
+}
+
+fi
+
 if [ $upstream = true ]; then 
 	if [ $STA_TYPE = mac ];then 
 # Macs have different scripts depending on direction so..
@@ -290,7 +375,7 @@ mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then
 start_test '-u';failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
-else echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1
+else if [ $remote_test = false ];then echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1;fi	
 	fi
 fi
 
@@ -302,7 +387,7 @@ mac_start_test;failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = linux ];then 
 start_test '-d';failcheck;ap_script && rm -f $iperf3log
 elif [ $STA_TYPE = win ];then echo 'aborting, not implemented' && exit 1
-else echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1
+else if [ $remote_test = false ];then echo "wrong sta_type (must be either "mac", "linux", or "win - Aborting"" && exit 1;fi
 	fi
 fi
 
