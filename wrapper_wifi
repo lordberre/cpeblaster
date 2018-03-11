@@ -1,9 +1,12 @@
 #!/bin/bash
-# Version 0.5
+# Version 0.7
+# Schedule the tests accordingly as coexist mechanisms aren't 100% reliable unless all tests are using the same iperf3 server
 
 # Enable or disable AP checking
 ap_checking=true
-server_unreachable=true # Use "true" if server is unreahable for host running wrapper script
+server_unreachable=false # Use "true" if server is unreachable for host running wrapper script
+mgmt_link=true # Set to true only if target/sta has a reliable link, e.g dedicated ethernet. There's no point in checking ansible state if link is too poor. Can also be set to false to disable ansible checking explicitly.
+
 # Broadcom AP
 # In order to use this, the phy.sh script need to be in /var/ of the AP device and the screen session must be up to the eRouter
 
@@ -11,8 +14,9 @@ server_unreachable=true # Use "true" if server is unreahable for host running wr
 # The AP must have internet access and the firewall must be open for the servers SNMP calls
 
 # Configure the locations of external scripts and logdir
-CELENO_SCRIPT="/home/lordberre-server/screens/ap_physcripting/./celeno_iw-snmp_forloop.sh"
-BROADCOM_SCRIPT="/home/lordberre-server/screens/ap_physcripting/3384_expect_forloop AC:BC:32:9B:EC:F5 macpro_5m-nlos"
+WRAPPER_DIR="/home/lordberre-server/screens/ap_physcripting"
+CELENO_SCRIPT="$WRAPPER_DIR/./celeno_iw-snmp_forloop.sh"
+BROADCOM_SCRIPT="$WRAPPER_DIR/3384_expect_forloop AC:BC:32:9B:EC:F5 macpro_5m-nlos"
 iperf3log="/var/log/iperf3_wrapper.log"
 IPERF3_SCRIPT="/home/chprobe/tcp_iperf3_clientv3.sh"
 SCREENLOGFILE="/home/lordberre-server/screens/usb0/sagem-rev3/screenlog.0"
@@ -34,14 +38,15 @@ IPERFSERVER=false
 TARGET=false
 downstream=false;upstream=false
 remote_test=false
+config_file=false
 LABEL1=label1
 LABEL2=label2
 
 
 # remote iperf3 vars
 logtag=iperf3tcp
-declare -i chprobe_iperf3tcp_sessions=15
-declare -i chprobe_iperf3tcp_duration=40
+declare -i chprobe_iperf3tcp_sessions=10
+declare -i chprobe_iperf3tcp_duration=35
 declare -i chprobe_iperf3tcp_omitduration=10
 
 usage () {
@@ -61,13 +66,14 @@ How to use: $0 -4 or -6 must be specified.
     -i) Set AP IP (celeno AP only)
     -y) Extra AP label 1
     -z) Extra AP label 2
+    -x) Load configuration file (TARGETNAME.cfg must be present in wrapper dir)
     -h) Show help
     -v) Increase verbosity
 
 USAGE
  }
 
-options='t:l:i:m:r:c:p:a:s:y:z:fudhv'
+options='t:l:i:m:r:c:p:a:s:y:z:xfudhv'
 
 while getopts $options option
 do
@@ -86,6 +92,7 @@ do
         s  ) STA_TYPE=${OPTARG};;
         y  ) LABEL1=${OPTARG};; # Temp
         z  ) LABEL2=${OPTARG};; # Temp
+        x  ) config_file=true;;
         f  ) remote_test=true; remote_friendlyname=${OPTARG};;
         ? ) echo "Unknown option: -$OPTARG" >&2; exit 1;;
         :  ) echo "Missing option argument for -$OPTARG" >&2; exit 1;;
@@ -93,14 +100,19 @@ do
     esac
 done
 
+if [ $config_file = true ]; then
+source $WRAPPER_DIR/${TARGET}.cfg
+else echo 'no config file loaded (use -x to load it), using script default settings'
+fi
+
 if [ $remote_test = false ]; then
-if [ $ap_checking = true ];then
+ if [ $ap_checking = true ];then
 	if [ $AP_TYPE = false ] || [ $AP_LABEL = false ] || [ $AP_RADIO = false ];then 
 echo "You forgot to use any of the following mandatory arguments:"
 echo "$(( set -o posix ; set ) | grep false)"
 echo
 exit 1
-	fi
+ fi
 fi
 
 if [ $IPERFSERVER = false ] || [ $TARGET = false ] || [ $STA_TYPE = false ] || [ $STA_MAC = false ]
@@ -112,8 +124,10 @@ exit 1
 fi
 
 # Kill leftover scripts
-if [ $(pgrep -f 'celeno|3384_expect' | wc -l) -gt 8 ];then
-kill $(pgrep -f 'celeno|3384_expect ' | head -1) && echo Killed some leftover scripts..
+if [ $(pgrep -fc 'celeno|3384_expect') -gt 8 ];then
+kill $(pgrep -f 'celeno|3384_expect ' | head -1) && echo "[wifiwrapper_error] Killed some leftover scripts.." | logger -p err
+elif [ $(pgrep -fc "$0") -gt 25 ];then
+kill $(pgrep -f "$0") && echo "[wifiwrapper_error] Overloaded with instances, killed everything" | logger -p err
 else echo "no leftover scripts detected (OK)"
 fi
 fi
@@ -240,8 +254,11 @@ fi
 fi
 
 init_vars () {
+if [ $mgmt_link = true ]; then
 ansible_status="$(ansible $TARGET -m ping)"
 ansible_check="$(printf "$ansible_status" | grep SUCCESS | wc -l)"
+else echo 'Ansible checking disabled'
+fi
 if [ $server_unreachable = false ];then
 iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 | grep busy | wc -l)"
 else iperf3_check=1
@@ -305,6 +322,12 @@ fi
 # This is for when the station is running the iperf3 server (good for dumb clients like Windows)
 if [ $remote_test = true ];then
 
+serverbusy_loop () {
+while iperf3 -c $target -4 -t 1 | grep busy; do
+sleep $[ ( $RANDOM % 1 ) + 3]s && echo "[$logtag] waiting cuz server is busy" | logger -p info
+done
+}
+
 anti_overload () {
 while [ `pgrep -fc 'iperf3 --client'` -ge 30 ];do kill $(pgrep -f "iperf3 --client" | awk '{print $1}') && echo "[$logtag] We're overloaded with daemons, killing everything" | logger -p local5.err ; done
 }
@@ -351,7 +374,7 @@ case "$(pgrep -fc "iperf3 --client")" in
 0)  echo "[$logtag] Let's see if we can start the daemon" | logger -p info
     serverbusy_loop
     echo "[$logtag] Starting $logtag [debug: $localstatus | $(pgrep -fc 'iperf3 --client')]" | logger -p notice
-    iperf_daemon;busy_failcheck && echo "[$logtag] daemon finished" | logger -p info &&
+    iperf_daemon;busy_failcheck && echo "[$logtag] daemon finished" | logger -p info
 ;;
 1)  echo "[$logtag] iperf daemon is already running" | logger -p info
           while [ `pgrep -fc 'iperf3 --client'` -ge 1 ];do sleep $[ ( $RANDOM % $probetimer ) + 3]s && echo "[$logtag] waiting cuz either an iperf3 or a bbk daemon is running" | logger -p info;done
@@ -363,9 +386,19 @@ case "$(pgrep -fc "iperf3 --client")" in
     kill $(pgrep -f "iperf3 --client" | awk '{print $1}')
     ;;
 esac;
-}
 
+}
+# Coexist with other scheduled tests & start test
+sleep $[ ( $RANDOM % 10 ) + 1]s
+while [ `pgrep -fc 'tcp_iperf3|iperf3tcp'` -ge 1 ];do sleep $[ ( $RANDOM % 3 ) + 1]s;done
+start_iperf3 &
+sleep 1 && init_vars;ap_script
+exit 0
 fi
+
+# Wait iperf3 clients to finish before going further
+sleep $[ ( $RANDOM % 10 ) + 1]s
+while [ `pgrep -fc 'iperf3 --client'` -ge 1 ];do sleep $[ ( $RANDOM % 3 ) + 1]s;done
 
 if [ $upstream = true ]; then 
 	if [ $STA_TYPE = mac ];then 
