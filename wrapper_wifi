@@ -1,5 +1,5 @@
 #!/bin/bash
-# Version 0.7
+# Version 0.8
 # Schedule the tests accordingly as coexist mechanisms aren't 100% reliable unless all tests are using the same iperf3 server
 
 # Enable or disable AP checking
@@ -213,10 +213,12 @@ fi
 fi
 
 # Broadcom AP
+# Most of this is TODO
 if [ $AP_TYPE = "broadcom" ]; then
 HOSTNAME="$(echo $STA_MAC | tr -d ':')"
 if [ $AP_RADIO = "5ghz" ];then AP_RADIO=wl1 # Only works with 4x4 AP
 elif [ $AP_RADIO = "2.4ghz" ]; then AP_RADIO=wl0 # Not implemented in local script
+elif [ $AP_RADIO = "bs" ]; then AP_RADIO=bs
 fi
 
 # Function for transfering logs from the console output
@@ -243,7 +245,7 @@ ap_script () {
 if [ $ap_checking = true ];then
 count="$(( ( RANDOM % 9999 )  + 100 ))"
 	if [ $iperf3_check -ge 1 ];then # Check if iperf3 server is busy and continue if so
-	screen -S $CONSOLE -X stuff "/data/./phy.sh $HOSTNAME $AP_RADIO $STA_MAC $LABEL1 $LABEL2 $count \n"
+	screen -S $CONSOLE -X stuff "/opt/data/./phy.sh $HOSTNAME $AP_RADIO $STA_MAC $LABEL1 $LABEL2 $count 2> /dev/null \n"
 #	sleep 1
 #	tail -300 $SCREENLOGFILE | grep $count >> $REDIRECT # Need proper func, tail is not enough
 	else echo "server is not busy so not running AP script.."
@@ -256,11 +258,11 @@ fi
 init_vars () {
 if [ $mgmt_link = true ]; then
 ansible_status="$(ansible $TARGET -m ping)"
-ansible_check="$(printf "$ansible_status" | grep SUCCESS | wc -l)"
+ansible_check="$(printf "$ansible_status" | grep -c SUCCESS)"
 else echo 'Ansible checking disabled'
 fi
 if [ $server_unreachable = false ];then
-iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 | grep busy | wc -l)"
+iperf3_check="$(iperf3 -c $IPERFSERVER -t 1 2>&1 | grep -c busy)"
 else iperf3_check=1
 fi
 }
@@ -274,7 +276,7 @@ start_test () {
 sleep 1
 # Use -f arg to force iperf3 server instead of using config file
 #ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 -f $IPERFSERVER &" >> $iperf3log &
-ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 $1 &" >> $iperf3log &
+ansible $TARGET -m shell -a "nohup /bin/bash $IPERF3_SCRIPT -4 -f $IPERFSERVER $1 &" >> $iperf3log &
 sleep 1; init_vars
 # ap_script
 else echo "Aborting because target is either unreachable ($ansible_check) or the iperf3 server is busy ($iperf3_check)" && exit 1
@@ -295,13 +297,13 @@ fi
 
 # Loop to try to mitigate from not properly ran tests..
 failcheck () {
-checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS | wc -l)"
+checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS -c)"
 busyfail=0
 while [ $checkbusy -eq 0 ]; do
 echo "no entry in the log, test must've failed, trying again.."
 sleep $[ ( $RANDOM % 1 ) + 3]s &&
 if [ $STA_TYPE = mac ];then mac_start_test;else start_test;fi # WA for MAC
-checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS | wc -l)"
+checkbusy="$(tail -300 $iperf3log | grep $TARGET | grep SUCCESS -c)"
 
 # Anti fail
 busyfail=$(( $busyfail + 1 ))
@@ -323,7 +325,7 @@ fi
 if [ $remote_test = true ];then
 
 serverbusy_loop () {
-while iperf3 -c $target -4 -t 1 | grep busy; do
+while iperf3 -c $target -4 -t 1 2>&1 | grep busy; do
 sleep $[ ( $RANDOM % 1 ) + 3]s && echo "[$logtag] waiting cuz server is busy" | logger -p info
 done
 }
@@ -334,13 +336,13 @@ while [ `pgrep -fc 'iperf3 --client'` -ge 30 ];do kill $(pgrep -f "iperf3 --clie
 
 # Make sure that the test is performed and not "skipped" due to the server becoming busy after we exited the first busy loop
 busy_failcheck () {
-checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' | wc -l)"
+checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' -c)"
 busyfail=0
 while [ $checkbusy -eq 1 ]; do
 echo "[$logtag] Everything seemed ok but we didn't run any test, looping until server is not busy ($busyfail)" | logger -p info &&
 sleep $[ ( $RANDOM % 20 ) + 11]s &&
 iperf_daemon
-checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' | wc -l)"
+checkbusy="$(tail -1 $iperf3log | grep $count | egrep 'busy|later' -c)"
 
 # Anti fail
 busyfail=$(( $busyfail + 1 ))
